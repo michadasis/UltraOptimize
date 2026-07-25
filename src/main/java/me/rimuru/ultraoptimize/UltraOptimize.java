@@ -58,7 +58,7 @@ public class UltraOptimize extends JavaPlugin {
 
             Logger.info("=================================");
             Logger.info("UltraOptimize v" + getDescription().getVersion() + " ENABLED");
-            Logger.info("Supporting MC 1.13-1.21+");
+            Logger.info("Supporting MC 1.13-26.2+");
             Logger.info("Java " + System.getProperty("java.version"));
             Logger.info("Server: " + Bukkit.getVersion());
             Logger.info("Paper Mode: " + (paperManager.isPaperDetected() ? "ENABLED" : "DISABLED"));

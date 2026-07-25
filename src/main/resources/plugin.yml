@@ -1,7 +1,7 @@
 name: UltraOptimize
 version: 1.0
 main: me.rimuru.ultraoptimize.UltraOptimize
-api-version: 1.13
+api-version: 26.2
 author: Rimuru
 description: Advanced server optimization plugin with Paper support
 commands:
