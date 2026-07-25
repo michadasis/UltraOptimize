@@ -92,8 +92,8 @@ public class PerformanceMonitor {
             tpsHistory.remove(0);
         }
 
-        // Auto view distance adjustment (only if supported)
-        if (config.isAutoViewDistance() && viewDistanceSupported) {
+        // Auto view distance adjustment (master switch + sub-toggle, only if supported)
+        if (config.isOptimizeViewDistance() && config.isAutoViewDistance() && viewDistanceSupported) {
             adjustViewDistance(tps);
         }
     }

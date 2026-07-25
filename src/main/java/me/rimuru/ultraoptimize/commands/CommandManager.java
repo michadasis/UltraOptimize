@@ -174,6 +174,9 @@ public class CommandManager implements CommandExecutor {
         sender.sendMessage("§eLifetime Entities Removed: §f" + plugin.getStatisticsManager().getEntitiesRemoved());
         sender.sendMessage("§eLifetime Items Merged: §f" + plugin.getStatisticsManager().getItemsMerged());
         sender.sendMessage("§eLifetime Chunks Preloaded: §f" + plugin.getStatisticsManager().getChunksPreloaded());
+        if (plugin.getConfigManager().isOptimizeAI()) {
+            sender.sendMessage("§eMobs with AI Paused: §f" + plugin.getEntityAIManager().getMobsFrozen());
+        }
 
         sender.sendMessage("");
         sender.sendMessage("§6§lTop Entities:");

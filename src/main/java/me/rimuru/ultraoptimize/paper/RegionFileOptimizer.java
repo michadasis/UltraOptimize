@@ -11,6 +11,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -324,46 +326,112 @@ public class RegionFileOptimizer {
     }
 
     /**
-     * Defragment a region file (experimental)
+     * Defragment a region file by compacting chunk sectors.
+     *
+     * This works purely at the Anvil container level: it never inspects or
+     * modifies chunk NBT/compressed payload bytes, only relocates whole
+     * 4096-byte sectors to remove the gaps left by deleted/relocated chunks
+     * and rewrites the two 4KB header tables to point at the new locations.
+     * That makes it safe across Minecraft versions without needing to
+     * understand chunk data itself.
      */
     private void defragmentRegionFile(File file) throws IOException {
-        // This is a simplified defragmentation
-        // In production, you'd want more sophisticated logic
+        // Only defragment if file is larger than 1MB
+        if (file.length() < 1024 * 1024) {
+            return;
+        }
 
-        try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
-            long length = raf.length();
+        File tempFile = new File(file.getParentFile(), file.getName() + ".defrag.tmp");
+        boolean completed = false;
 
-            // Only defragment if file is larger than 1MB
-            if (length < 1024 * 1024) {
-                return;
-            }
+        try {
+            try (RandomAccessFile source = new RandomAccessFile(file, "r")) {
+                long fileLength = source.length();
+                if (fileLength < 8192) {
+                    return; // not a complete region file
+                }
 
-            // Read header (8KB)
-            byte[] header = new byte[8192];
-            raf.read(header);
+                byte[] locationTable = new byte[4096];
+                byte[] timestampTable = new byte[4096];
+                source.seek(0);
+                source.readFully(locationTable);
+                source.readFully(timestampTable);
 
-            // Analyze chunk allocation
-            int usedSectors = 0;
-            for (int i = 0; i < 1024; i++) {
-                int offset = (header[i * 4] & 0xFF) << 16 |
-                        (header[i * 4 + 1] & 0xFF) << 8 |
-                        (header[i * 4 + 2] & 0xFF);
-                int sectors = header[i * 4 + 3] & 0xFF;
+                int[] sectorOffset = new int[1024];
+                int[] sectorCount = new int[1024];
+                int usedSectors = 0;
 
-                if (offset > 0 && sectors > 0) {
-                    usedSectors += sectors;
+                for (int i = 0; i < 1024; i++) {
+                    int offset = ((locationTable[i * 4] & 0xFF) << 16) |
+                            ((locationTable[i * 4 + 1] & 0xFF) << 8) |
+                            (locationTable[i * 4 + 2] & 0xFF);
+                    int count = locationTable[i * 4 + 3] & 0xFF;
+
+                    if (offset == 0 || count == 0) continue;
+
+                    long byteOffset = (long) offset * 4096L;
+                    long byteLength = (long) count * 4096L;
+
+                    // Sanity check: entries must land inside the file and
+                    // never inside the 8KB header. If not, the file is
+                    // corrupt/mid-write - leave it untouched.
+                    if (offset < 2 || byteOffset + byteLength > fileLength) {
+                        Logger.warning("Skipping defragmentation of " + file.getName() +
+                                " - invalid chunk sector table entry");
+                        return;
+                    }
+
+                    sectorOffset[i] = offset;
+                    sectorCount[i] = count;
+                    usedSectors += count;
+                }
+
+                if (usedSectors == 0) {
+                    return; // no chunks to compact
+                }
+
+                long newLength = 8192L + (long) usedSectors * 4096L;
+                if (newLength >= fileLength) {
+                    return; // already compact, nothing to gain
+                }
+
+                try (RandomAccessFile dest = new RandomAccessFile(tempFile, "rw")) {
+                    dest.setLength(newLength);
+
+                    byte[] newLocationTable = new byte[4096];
+                    int cursorSector = 2; // sectors 0-1 are the 8KB header
+
+                    for (int i = 0; i < 1024; i++) {
+                        if (sectorCount[i] == 0) continue;
+
+                        byte[] buffer = new byte[sectorCount[i] * 4096];
+                        source.seek((long) sectorOffset[i] * 4096L);
+                        source.readFully(buffer);
+
+                        dest.seek((long) cursorSector * 4096L);
+                        dest.write(buffer);
+
+                        newLocationTable[i * 4] = (byte) ((cursorSector >> 16) & 0xFF);
+                        newLocationTable[i * 4 + 1] = (byte) ((cursorSector >> 8) & 0xFF);
+                        newLocationTable[i * 4 + 2] = (byte) (cursorSector & 0xFF);
+                        newLocationTable[i * 4 + 3] = (byte) (sectorCount[i] & 0xFF);
+
+                        cursorSector += sectorCount[i];
+                    }
+
+                    dest.seek(0);
+                    dest.write(newLocationTable);
+                    dest.write(timestampTable);
                 }
             }
 
-            // Calculate theoretical minimum size
-            long minSize = (usedSectors + 2) * 4096L;
+            // Atomically swap the compacted copy in place of the original
+            Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            completed = true;
 
-            // If file is significantly larger, it has fragmentation
-            if (length > minSize * 1.5) {
-                Logger.debug("Defragmentation opportunity detected in " + file.getName() +
-                        " (current: " + formatBytes(length) + ", optimal: " + formatBytes(minSize) + ")");
-                // Actual defragmentation would require rewriting chunks
-                // This is complex and risky, so we just log for now
+        } finally {
+            if (!completed && tempFile.exists()) {
+                tempFile.delete();
             }
         }
     }

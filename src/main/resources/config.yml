@@ -83,36 +83,45 @@ performance:
   optimize-redstone: true
   # Optimize hopper performance
   optimize-hoppers: true
-  # Maximum hoppers allowed per chunk
+  # Maximum hoppers allowed per chunk (logs a warning above this; does not remove hoppers)
   max-hoppers-per-chunk: 10
-  # Hopper tick rate (higher = slower but less lag)
+  # Minimum ticks between item transfers per hopper (vanilla default is 8).
+  # Higher = fewer transfers per second = less lag from hopper-heavy builds.
   hopper-tick-rate: 8
-  # Optimize lighting calculations
+  # RESERVED FOR A FUTURE RELEASE - not currently functional.
+  # There is no generic Bukkit/Paper API to hook vanilla lighting
+  # recalculation, so this key has no effect yet.
   optimize-lighting: true
-  # Reduce particle effects
+  # RESERVED FOR A FUTURE RELEASE - not currently functional.
+  # There is no generic Bukkit/Paper API to intercept arbitrary vanilla
+  # particle effects (weather, block break, potion auras, etc.), so these
+  # two keys have no effect yet. Kept in config for forward compatibility.
   reduce-particles: false
-  # Percentage of particles to reduce (0-100)
+  # Percentage of particles to reduce (0-100) - see note above
   particle-reduction: 50
 
 # Advanced Settings
 advanced:
   # Use asynchronous chunk processing (recommended)
   async-chunks: true
-  # Optimize entity AI pathfinding
+  # Periodically disable AI/pathfinding (Mob#setAware) for mobs outside
+  # pathfinding-limit blocks of every player, to cut CPU cost from
+  # far-away mob goal/pathfinding processing.
   optimize-ai: true
-  # Maximum pathfinding distance for entities
+  # Distance (blocks) from the nearest player within which mob AI stays active
   pathfinding-limit: 32
-  # Enable view distance optimization
+  # Master switch for view distance optimization - must be true for
+  # auto-view-distance below to take effect
   optimize-view-distance: false
-  # Automatically adjust view distance based on TPS
+  # Automatically adjust view distance based on TPS (requires optimize-view-distance: true)
   auto-view-distance: false
   # Minimum view distance when auto-adjusting
   min-view-distance: 3
   # Maximum view distance when auto-adjusting
   max-view-distance: 10
-  # Optimize entity ticking
+  # Scale how often the AI optimization sweep (above) runs: interval = entity-tick-rate * 1 second
   optimize-entity-ticking: true
-  # Tick rate for entities (1 = every tick, 2 = every other tick)
+  # AI sweep interval in seconds when optimize-entity-ticking is true (1 = every second, 2 = every 2 seconds, ...)
   entity-tick-rate: 1
 
 # Paper-Specific Optimizations (Only active on Paper servers)
@@ -162,7 +171,10 @@ paper:
     cache-cleanup-interval: 60
     # Cache timeout in milliseconds (5 minutes)
     cache-timeout: 300000
-    # Auto-defragment region files (experimental)
+    # Compact region files by removing sector gaps left by deleted/relocated
+    # chunks (only rearranges whole 4096-byte sectors, never touches chunk
+    # data itself). Off by default since it rewrites world files on disk -
+    # take a backup before enabling on an existing world.
     auto-defragment: false
     # Auto-remove empty region files
     remove-empty-regions: false
@@ -214,8 +226,15 @@ worlds:
 # REGION FILE OPTIMIZATION:
 # - Incremental saving reduces lag during world saves
 # - Cache cleanup prevents memory leaks
-# - Auto-defragment is experimental and should be tested
+# - Auto-defragment compacts chunk sectors on disk; take a world backup
+#   before enabling it on an existing world
 # - Empty region removal frees disk space
+#
+# HOPPER & AI OPTIMIZATION:
+# - hopper-tick-rate throttles item transfers per hopper (8 = vanilla default)
+# - optimize-ai pauses AI/pathfinding for mobs beyond pathfinding-limit
+#   blocks from every player; entity-tick-rate controls how often that
+#   check re-runs when optimize-entity-ticking is true
 #
 # PERFORMANCE TIPS:
 # - Enable async-chunks for best performance
