@@ -112,6 +112,9 @@ public class UltraOptimize extends JavaPlugin {
             if (entityAIManager != null) {
                 entityAIManager.shutdown();
             }
+            if (entityManager != null) {
+                entityManager.shutdown();
+            }
             if (optimizationManager != null) {
                 optimizationManager.shutdown();
             }
@@ -172,6 +175,7 @@ public class UltraOptimize extends JavaPlugin {
             statisticsManager.start();
             performanceMonitor.start();
             chunkManager.start();
+            entityManager.start();
             chunkPreloader.start(); // Will preload spawn chunks on startup
             optimizationManager.start();
             entityAIManager.start();

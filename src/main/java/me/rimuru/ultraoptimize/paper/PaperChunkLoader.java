@@ -7,6 +7,7 @@ import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -312,6 +313,12 @@ public class PaperChunkLoader implements Listener {
         if (cleanupTask != null) {
             cleanupTask.cancel();
         }
+
+        // Unregister this instance from Bukkit's event system. Without this,
+        // reinitializing on /uo reload (which constructs and registers a new
+        // PaperChunkLoader) leaves this one permanently subscribed to
+        // ChunkLoadEvent, leaking the instance and duplicating event handling.
+        HandlerList.unregisterAll(this);
 
         currentlyLoading.clear();
         recentLoads.clear();
