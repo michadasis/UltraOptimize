@@ -111,7 +111,10 @@ advanced:
   # Distance (blocks) from the nearest player within which mob AI stays active
   pathfinding-limit: 32
   # Master switch for view distance optimization - must be true for
-  # auto-view-distance below to take effect
+  # auto-view-distance below to take effect.
+  # Requires Paper or a Paper-based fork (e.g. Purpur): the underlying
+  # World#setViewDistance API this depends on does not exist on plain
+  # Spigot at any Minecraft version, so this has no effect there.
   optimize-view-distance: false
   # Automatically adjust view distance based on TPS (requires optimize-view-distance: true)
   auto-view-distance: false
@@ -235,6 +238,12 @@ worlds:
 # - optimize-ai pauses AI/pathfinding for mobs beyond pathfinding-limit
 #   blocks from every player; entity-tick-rate controls how often that
 #   check re-runs when optimize-entity-ticking is true
+#
+# VIEW DISTANCE CONTROL:
+# - optimize-view-distance and auto-view-distance, and the /uo view
+#   command, all require Paper or a Paper-based fork (e.g. Purpur)
+# - plain Spigot has no API to change view distance at runtime, so these
+#   settings are silently inert there regardless of Minecraft version
 #
 # PERFORMANCE TIPS:
 # - Enable async-chunks for best performance
