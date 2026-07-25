@@ -50,7 +50,8 @@ public class PerformanceMonitor {
             Logger.info("View distance management is supported on this server version");
         } catch (NoSuchMethodException e) {
             viewDistanceSupported = false;
-            Logger.info("View distance management is not supported on this server version (requires 1.14+)");
+            Logger.info("View distance management is not supported (World#setViewDistance requires " +
+                    "Paper or a Paper-based fork; it is not part of the Spigot API)");
         }
     }
 
@@ -202,7 +203,8 @@ public class PerformanceMonitor {
 
     public void setWorldViewDistance(World world, int distance) {
         if (!viewDistanceSupported) {
-            Logger.warning("Cannot set view distance - requires Minecraft 1.14+");
+            Logger.warning("Cannot set view distance - World#setViewDistance is only exposed by " +
+                    "Paper's Bukkit API (or Paper-based forks); it does not exist on plain Spigot");
             return;
         }
 

@@ -303,8 +303,8 @@ public class CommandManager implements CommandExecutor {
         }
 
         if (!plugin.getPerformanceMonitor().isViewDistanceSupported()) {
-            sender.sendMessage("§c[UltraOptimize] View distance management is not supported on this server version!");
-            sender.sendMessage("§7Requires Minecraft 1.14 or newer.");
+            sender.sendMessage("§c[UltraOptimize] View distance management is not supported on this server!");
+            sender.sendMessage("§7" + viewDistanceUnsupportedReason());
             return true;
         }
 
@@ -425,7 +425,22 @@ public class CommandManager implements CommandExecutor {
         sender.sendMessage("§ePreload Radius: §f" + plugin.getConfigManager().getPreloadRadius() + " chunks");
         sender.sendMessage("§eOptimization Interval: §f" + plugin.getConfigManager().getAutoOptimizeInterval() + "s");
         sender.sendMessage("§eTPS Threshold: §f" + plugin.getConfigManager().getTpsThreshold());
-        sender.sendMessage("§eView Distance Control: " + (plugin.getPerformanceMonitor().isViewDistanceSupported() ? "§aSupported" : "§cNot Supported (1.14+ required)"));
+        String viewDistanceStatus = plugin.getPerformanceMonitor().isViewDistanceSupported()
+                ? "§aSupported"
+                : "§cNot Supported (" + viewDistanceUnsupportedReason() + ")";
+        sender.sendMessage("§eView Distance Control: " + viewDistanceStatus);
+    }
+
+    /**
+     * World#setViewDistance only exists on Paper's Bukkit API (and forks
+     * like Purpur), never on plain Spigot, regardless of Minecraft version.
+     * Report the actual blocker instead of the misleading "1.14+ required".
+     */
+    private String viewDistanceUnsupportedReason() {
+        if (!plugin.getPaperManager().isPaperDetected()) {
+            return "requires Paper or a Paper-based fork; not available on Spigot";
+        }
+        return "requires Minecraft 1.14 or newer";
     }
 
     private void showHelp(CommandSender sender) {
@@ -442,7 +457,7 @@ public class CommandManager implements CommandExecutor {
         sender.sendMessage("§e/uo auto §7- Toggle auto-optimization");
         sender.sendMessage("§e/uo merge §7- Merge nearby items/xp");
         if (plugin.getPerformanceMonitor().isViewDistanceSupported()) {
-            sender.sendMessage("§e/uo view <world> <dist> §7- Set view distance (1.14+)");
+            sender.sendMessage("§e/uo view <world> <dist> §7- Set view distance (Paper only)");
         }
         sender.sendMessage("§e/uo report §7- Generate performance report");
         sender.sendMessage("§e/uo info §7- Show plugin configuration");

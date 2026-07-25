@@ -41,7 +41,7 @@ When running on a Paper server, UltraOptimize enables the following additional s
 * Redstone optimization that limits excessive updates using a per location rolling time window.
 * Hopper optimization that throttles item transfers per hopper according to a configurable tick rate. The default value reproduces vanilla's own eight tick cooldown.
 * AI pathfinding optimization that pauses AI and pathfinding processing for mobs outside a configurable distance from every player.
-* Dynamic view distance adjustment on 1.14 and newer, controlled by both the optimize view distance and auto view distance settings.
+* Dynamic view distance adjustment, controlled by both the optimize view distance and auto view distance settings. This requires Paper or a Paper based fork such as Purpur; the underlying API to change view distance at runtime does not exist on plain Spigot at any Minecraft version.
 * Automatic garbage collection when memory usage is high.
 * Particle reduction options are reserved for a future release. There is currently no general purpose Bukkit or Paper API that allows a plugin to intercept arbitrary vanilla particle effects, so the reduce particles and particle reduction settings exist in the configuration file but have no effect yet.
 
@@ -141,9 +141,9 @@ advanced:
 * `/uo preload info`: shows the current preloading status.
 * `/uo preload restart`: restarts spawn chunk preloading.
 
-### View Distance (1.14+)
+### View Distance (Paper only)
 
-* `/uo view <world> <distance>`: sets the view distance for a world.
+* `/uo view <world> <distance>`: sets the view distance for a world. Requires Paper or a Paper based fork; see Troubleshooting below.
 
 ### Paper Only Commands
 
@@ -280,6 +280,12 @@ advanced:
 * Confirm the server is actually running Paper with `/version`.
 * Check the console for a message confirming that a Paper server was detected.
 * Some features require a specific Paper version.
+
+### View Distance Control Reports as Not Supported
+
+* Run `/uo info` and check the View Distance Control line for the reason given.
+* If it says the server needs to be Paper, plain Spigot has no API for changing view distance at runtime, at any Minecraft version. Switch to Paper or a Paper based fork such as Purpur to use this feature.
+* If Paper is already confirmed with `/version`, check the console at startup for the exact reason logged by the plugin.
 
 ### Before Enabling auto-defragment
 

@@ -6,6 +6,8 @@ import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.*;
 import org.bukkit.entity.*;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,17 +15,43 @@ import java.util.stream.Collectors;
 
 public class EntityManager {
 
+    private static final long CLEANUP_INTERVAL_TICKS = 20L * 300; // 5 minutes
+
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
     private final Map<EntityType, Integer> entityCounts;
     private final Map<Location, Long> lastMergeTime;
 
+    private BukkitTask cleanupTask;
+
     public EntityManager(UltraOptimize plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
         this.entityCounts = new ConcurrentHashMap<>();
         this.lastMergeTime = new ConcurrentHashMap<>();
+    }
+
+    /**
+     * Starts a periodic sweep of lastMergeTime. Without this, entries only
+     * get pruned as a side effect of optimizeWorld() running (auto-optimize
+     * triggering or a manual /uo optimize), so a healthy server that never
+     * dips below the TPS threshold would otherwise grow this map forever as
+     * items merge.
+     */
+    public void start() {
+        cleanupTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                cleanupMergeTimeCache();
+            }
+        }.runTaskTimer(plugin, CLEANUP_INTERVAL_TICKS, CLEANUP_INTERVAL_TICKS);
+    }
+
+    public void shutdown() {
+        if (cleanupTask != null) {
+            cleanupTask.cancel();
+        }
     }
 
     public int optimizeWorld(World world) {
