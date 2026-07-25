@@ -29,7 +29,6 @@ public class EntityAIManager {
 
     private BukkitTask task;
     private int mobsFrozen;
-    private int mobsAwakened;
 
     public EntityAIManager(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -84,8 +83,11 @@ public class EntityAIManager {
 
     private void sweep() {
         int limit = config.getPathfindingLimit();
-        mobsFrozen = 0;
-        mobsAwakened = 0;
+        // Snapshot of how many mobs are frozen as of *this* sweep, not just
+        // how many newly changed state this tick. A delta-only count
+        // collapses to ~0 almost immediately, since once a mob is frozen
+        // it no longer triggers a transition on later sweeps.
+        int frozenCount = 0;
 
         for (World world : Bukkit.getWorlds()) {
             if (!isWorldEnabled(world.getName())) continue;
@@ -101,15 +103,18 @@ public class EntityAIManager {
 
                 boolean nearPlayer = isWithinRange(mob, players, limit);
 
-                if (!nearPlayer && mob.isAware()) {
-                    mob.setAware(false);
-                    mobsFrozen++;
-                } else if (nearPlayer && !mob.isAware()) {
+                if (!nearPlayer) {
+                    if (mob.isAware()) {
+                        mob.setAware(false);
+                    }
+                    frozenCount++;
+                } else if (!mob.isAware()) {
                     mob.setAware(true);
-                    mobsAwakened++;
                 }
             }
         }
+
+        mobsFrozen = frozenCount;
     }
 
     private boolean isWithinRange(Mob mob, List<Player> players, int limit) {
@@ -139,9 +144,5 @@ public class EntityAIManager {
 
     public int getMobsFrozen() {
         return mobsFrozen;
-    }
-
-    public int getMobsAwakened() {
-        return mobsAwakened;
     }
 }
