@@ -4,6 +4,8 @@ import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -17,24 +19,88 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class StatisticsManager {
 
+    private static final long AUTOSAVE_INTERVAL_TICKS = 20L * 60 * 5; // 5 minutes
+
     private final UltraOptimize plugin;
+    private final File lifetimeStatsFile;
 
     private final AtomicInteger totalOptimizations;
     private final AtomicInteger entitiesRemoved;
     private final AtomicInteger itemsMerged;
     private final AtomicInteger chunksUnloaded;
     private final AtomicLong chunksPreloaded;
+    private final AtomicLong lifetimeUptime;
 
     private long sessionStartTime;
+    private BukkitTask autosaveTask;
 
     public StatisticsManager(UltraOptimize plugin) {
         this.plugin = plugin;
+        this.lifetimeStatsFile = new File(plugin.getDataFolder(), "lifetime-stats.yml");
         this.totalOptimizations = new AtomicInteger(0);
         this.entitiesRemoved = new AtomicInteger(0);
         this.itemsMerged = new AtomicInteger(0);
         this.chunksUnloaded = new AtomicInteger(0);
         this.chunksPreloaded = new AtomicLong(0);
+        this.lifetimeUptime = new AtomicLong(0);
         this.sessionStartTime = System.currentTimeMillis();
+
+        loadLifetimeStatistics();
+    }
+
+    /**
+     * Starts periodic autosaving so lifetime totals survive a crash, not
+     * just a clean shutdown.
+     */
+    public void start() {
+        autosaveTask = Bukkit.getScheduler().runTaskTimer(plugin, this::persistLifetimeStatistics,
+                AUTOSAVE_INTERVAL_TICKS, AUTOSAVE_INTERVAL_TICKS);
+    }
+
+    public void shutdown() {
+        if (autosaveTask != null) {
+            autosaveTask.cancel();
+        }
+    }
+
+    private void loadLifetimeStatistics() {
+        if (!lifetimeStatsFile.exists()) {
+            return;
+        }
+
+        try {
+            YamlConfiguration data = YamlConfiguration.loadConfiguration(lifetimeStatsFile);
+            totalOptimizations.set(data.getInt("total-optimizations", 0));
+            entitiesRemoved.set(data.getInt("entities-removed", 0));
+            itemsMerged.set(data.getInt("items-merged", 0));
+            chunksUnloaded.set(data.getInt("chunks-unloaded", 0));
+            chunksPreloaded.set(data.getLong("chunks-preloaded", 0));
+            lifetimeUptime.set(data.getLong("lifetime-uptime-millis", 0));
+
+            Logger.info("Loaded lifetime statistics (optimizations: " + totalOptimizations.get() +
+                    ", entities removed: " + entitiesRemoved.get() + ")");
+        } catch (Exception e) {
+            Logger.warning("Failed to load lifetime statistics: " + e.getMessage());
+        }
+    }
+
+    private void persistLifetimeStatistics() {
+        try {
+            if (!plugin.getDataFolder().exists()) {
+                plugin.getDataFolder().mkdirs();
+            }
+
+            YamlConfiguration data = new YamlConfiguration();
+            data.set("total-optimizations", getTotalOptimizations());
+            data.set("entities-removed", getEntitiesRemoved());
+            data.set("items-merged", getItemsMerged());
+            data.set("chunks-unloaded", getChunksUnloaded());
+            data.set("chunks-preloaded", getChunksPreloaded());
+            data.set("lifetime-uptime-millis", lifetimeUptime.get() + getUptime());
+            data.save(lifetimeStatsFile);
+        } catch (IOException e) {
+            Logger.warning("Failed to persist lifetime statistics: " + e.getMessage());
+        }
     }
 
     public void incrementOptimizations() {
@@ -81,13 +147,19 @@ public class StatisticsManager {
         return System.currentTimeMillis() - sessionStartTime;
     }
 
+    public long getLifetimeUptime() {
+        return lifetimeUptime.get() + getUptime();
+    }
+
     public void reset() {
         totalOptimizations.set(0);
         entitiesRemoved.set(0);
         itemsMerged.set(0);
         chunksUnloaded.set(0);
         chunksPreloaded.set(0);
+        lifetimeUptime.set(0);
         sessionStartTime = System.currentTimeMillis();
+        persistLifetimeStatistics();
         Logger.info("Statistics reset");
     }
 
@@ -106,7 +178,8 @@ public class StatisticsManager {
             writer.write("\n=================================\n");
             writer.write("Session End: " + sdf.format(new Date()) + "\n");
             writer.write("=================================\n");
-            writer.write("Uptime: " + formatUptime(getUptime()) + "\n");
+            writer.write("Session Uptime: " + formatUptime(getUptime()) + "\n");
+            writer.write("Lifetime Uptime: " + formatUptime(getLifetimeUptime()) + "\n");
             writer.write("Average TPS: " + String.format("%.2f", plugin.getPerformanceMonitor().getAverageTPS()) + "\n");
             writer.write("Total Entities: " + plugin.getEntityManager().getTotalEntities() + "\n");
             writer.write("Loaded Chunks: " + getTotalChunks() + "\n");
@@ -118,6 +191,8 @@ public class StatisticsManager {
             writer.write("\n");
 
             writer.close();
+
+            persistLifetimeStatistics();
 
             Logger.info("Statistics saved successfully");
 

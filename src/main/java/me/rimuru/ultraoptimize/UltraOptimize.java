@@ -21,10 +21,14 @@ public class UltraOptimize extends JavaPlugin {
     private OptimizationManager optimizationManager;
     private PerformanceMonitor performanceMonitor;
     private StatisticsManager statisticsManager;
+    private EntityAIManager entityAIManager;
     private CommandManager commandManager;
 
     // Paper-specific manager
     private PaperOptimizationManager paperManager;
+
+    private RedstoneListener redstoneListener;
+    private HopperListener hopperListener;
 
     @Override
     public void onEnable() {
@@ -42,6 +46,7 @@ public class UltraOptimize extends JavaPlugin {
             entityManager = new EntityManager(this);
             chunkPreloader = new ChunkPreloader(this);
             optimizationManager = new OptimizationManager(this);
+            entityAIManager = new EntityAIManager(this);
 
             // Initialize Paper-specific features
             paperManager = new PaperOptimizationManager(this);
@@ -104,6 +109,9 @@ public class UltraOptimize extends JavaPlugin {
             }
 
             // Stop all managers in reverse order
+            if (entityAIManager != null) {
+                entityAIManager.shutdown();
+            }
             if (optimizationManager != null) {
                 optimizationManager.shutdown();
             }
@@ -117,7 +125,14 @@ public class UltraOptimize extends JavaPlugin {
                 performanceMonitor.shutdown();
             }
             if (statisticsManager != null) {
+                statisticsManager.shutdown();
                 statisticsManager.saveStatistics();
+            }
+            if (redstoneListener != null) {
+                redstoneListener.shutdown();
+            }
+            if (hopperListener != null) {
+                hopperListener.shutdown();
             }
 
             Logger.info("UltraOptimize disabled successfully!");
@@ -132,7 +147,14 @@ public class UltraOptimize extends JavaPlugin {
         try {
             getServer().getPluginManager().registerEvents(new ChunkListener(this), this);
             getServer().getPluginManager().registerEvents(new EntityListener(this), this);
-            getServer().getPluginManager().registerEvents(new RedstoneListener(this), this);
+
+            redstoneListener = new RedstoneListener(this);
+            getServer().getPluginManager().registerEvents(redstoneListener, this);
+            redstoneListener.start();
+
+            hopperListener = new HopperListener(this);
+            getServer().getPluginManager().registerEvents(hopperListener, this);
+            hopperListener.start();
 
             // FIXED: Register PlayerMoveListener for chunk preloading
             getServer().getPluginManager().registerEvents(new PlayerMoveListener(this), this);
@@ -147,10 +169,12 @@ public class UltraOptimize extends JavaPlugin {
     private void startManagers() {
         try {
             // Start managers in correct order
+            statisticsManager.start();
             performanceMonitor.start();
             chunkManager.start();
             chunkPreloader.start(); // Will preload spawn chunks on startup
             optimizationManager.start();
+            entityAIManager.start();
 
             // Start Paper-specific systems (only if Paper is detected AND enabled in config)
             if (paperManager != null && paperManager.isPaperDetected() && configManager.isPaperEnabled()) {
@@ -176,6 +200,7 @@ public class UltraOptimize extends JavaPlugin {
             optimizationManager.restart();
             chunkManager.restart();
             chunkPreloader.restart();
+            entityAIManager.restart();
 
             // Restart Paper managers if enabled
             if (paperManager != null && paperManager.isPaperDetected() && configManager.isPaperEnabled()) {
@@ -227,6 +252,10 @@ public class UltraOptimize extends JavaPlugin {
 
     public StatisticsManager getStatisticsManager() {
         return statisticsManager;
+    }
+
+    public EntityAIManager getEntityAIManager() {
+        return entityAIManager;
     }
 
     public CommandManager getCommandManager() {

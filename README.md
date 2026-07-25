@@ -14,7 +14,7 @@ When running on Paper servers, UltraOptimize unlocks advanced features:
 
 Advanced Chunk System: Plugin chunk tickets and urgent chunk loading
 Watchdog Monitor: Automatic hang detection with emergency mode
-Region File Optimization: Defragment and clean region files
+Region File Optimization: Defragment (sector-level compaction, chunk data is never touched) and clean region files
 Incremental Saving: Reduce lag from world saves
 
 Entity Optimization
@@ -34,18 +34,19 @@ Max loaded chunks limit
 
 Performance Features
 
-Redstone optimization (limit excessive updates)
-Hopper optimization with tick rate adjustment
-Dynamic view distance adjustment (1.14+)
+Redstone optimization (limit excessive updates, per-location rolling window)
+Hopper optimization with tick rate adjustment (throttles item transfers per hopper; default matches vanilla's own 8-tick cooldown)
+AI pathfinding optimization (pauses AI/pathfinding for mobs outside a configurable distance from every player)
+Dynamic view distance adjustment (1.14+, gated by optimize-view-distance + auto-view-distance)
 Automatic garbage collection when memory is high
-Particle reduction options
+Particle reduction options — reserved for a future release. There is no generic Bukkit/Paper API to intercept arbitrary vanilla particle effects, so `reduce-particles`/`particle-reduction` are currently config placeholders with no effect
 
 📋 Requirements
 
 Minecraft: 1.13+ (1.8.9-1.12 untested but may work)
 Server: Spigot, Paper (recommended), or compatible forks
-Java: 8 or higher
-Note: api-version 1.13 means the plugin is built for 1.13+, but Paper features work best on Paper 1.14+
+Java: 25 or higher — the plugin is compiled with `--release 25` (see pom.xml); a Java 8-24 runtime cannot load the built jar
+Note: plugin.yml declares `api-version: 26.2`, matching the Spigot API version this build targets. Paper-specific features require actually running on Paper (not just a Paper-API-compatible fork) for the underlying APIs to exist, and work best on Paper 1.14+
 
 📦 Installation
 
@@ -103,7 +104,7 @@ Basic Commands
 
 /uo or /ultraoptimize - Show help menu
 /uo reload - Reload configuration
-/uo stats - Show detailed server statistics
+/uo stats - Show detailed server statistics (includes AI-paused mob count when advanced.optimize-ai is enabled)
 /uo info - Show plugin configuration
 /uo report - Generate performance analysis report
 
@@ -162,17 +163,17 @@ ultraoptimize.paper - Paper-specific commands
 ultraoptimize.notify - Receive optimization notifications
 
 📊 Statistics Tracking
-UltraOptimize tracks and saves these lifetime statistics:
+UltraOptimize tracks and saves these statistics:
 
-Total optimizations performed
-Entities removed
-Items merged
-Chunks unloaded
-Chunks preloaded
+Total optimizations performed (lifetime)
+Entities removed (lifetime)
+Items merged (lifetime)
+Chunks unloaded (lifetime)
+Chunks preloaded (lifetime)
 Session uptime
-Average TPS
+Average TPS (current session)
 
-Statistics are saved to plugins/UltraOptimize/statistics.log on shutdown.
+Lifetime totals are persisted to `plugins/UltraOptimize/lifetime-stats.yml` — loaded back in on startup and autosaved every 5 minutes, so they survive restarts and crashes, not just clean shutdowns. A human-readable per-session summary (including both session and lifetime uptime) is also appended to `plugins/UltraOptimize/statistics.log` on shutdown.
 🔧 Performance Tips
 For Small Servers (1-10 players)
 yamlauto-optimize:
@@ -247,6 +248,12 @@ Paper Features Not Working
 Verify running on Paper: /version
 Check console for "Paper server detected"
 Some features require specific Paper versions
+
+Before Enabling auto-defragment
+
+This rewrites region (.mca) files on disk by compacting chunk sectors
+Take a world backup first, as with any tool that rewrites world files
+Only whole 4096-byte sectors are moved; chunk data itself is never parsed or modified
 
 📈 Monitoring
 Key Metrics to Watch
