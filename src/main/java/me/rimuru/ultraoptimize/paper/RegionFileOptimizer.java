@@ -33,8 +33,8 @@ public class RegionFileOptimizer {
 
     // Paper API methods
     private Method saveIncrementallyMethod;
-    private Method flushRegionCacheMethod;
     private boolean paperRegionSupported;
+    private boolean defragRiskWarned;
 
     // Configuration - loaded from config instead of hardcoded
     private boolean incrementalSaving;
@@ -91,15 +91,6 @@ public class RegionFileOptimizer {
                 Logger.info("Paper incremental save API detected");
             } catch (NoSuchMethodException e) {
                 Logger.debug("Incremental save API not available");
-            }
-
-            // Check for region cache flushing (Paper internal)
-            try {
-                Class<?> regionFileClass = Class.forName("net.minecraft.world.level.chunk.storage.RegionFile");
-                flushRegionCacheMethod = regionFileClass.getMethod("flush");
-                Logger.info("Paper region cache API detected");
-            } catch (ClassNotFoundException | NoSuchMethodException e) {
-                Logger.debug("Region cache API not available");
             }
 
             paperRegionSupported = (saveIncrementallyMethod != null);
@@ -283,6 +274,16 @@ public class RegionFileOptimizer {
         }
 
         Logger.info("Optimizing region files for " + world.getName() + "...");
+
+        if (autoDefragment && !defragRiskWarned) {
+            Logger.warning("Defragmentation rewrites .mca files on disk while " + world.getName() +
+                    " is still loaded. There is no public API to invalidate the server's own " +
+                    "in-memory region-file cache afterward, so a chunk save that lands mid-operation " +
+                    "could still write to now-stale offsets. flushRegionCache() runs first to narrow " +
+                    "this window, but it is not eliminated - disable paper.region-files.auto-defragment " +
+                    "if this risk is a concern for this server.");
+            defragRiskWarned = true;
+        }
 
         File[] files = regionDir.listFiles((dir, name) -> name.endsWith(".mca"));
         if (files == null) {

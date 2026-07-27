@@ -116,12 +116,25 @@ public class PaperChunkSystem {
                 CompletableFuture<Chunk> future = (CompletableFuture<Chunk>)
                         getChunkAtAsyncUrgentlyMethod.invoke(world, chunkX, chunkZ);
 
-                return future.thenApply(chunk -> {
+                // Paper completes this future on an unspecified (often
+                // non-main) thread. Hop back to the main thread before
+                // touching the map/set below or handing the chunk to
+                // whatever the caller chains next, since Bukkit API use
+                // requires the main thread. (No current caller relies on
+                // this, but the future returned here must be safe by
+                // construction for whoever eventually does.)
+                CompletableFuture<Chunk> result = new CompletableFuture<>();
+                future.whenComplete((chunk, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (error != null) {
+                        result.completeExceptionally(error);
+                        return;
+                    }
                     chunkLoadTimes.put(key, System.currentTimeMillis());
                     priorityChunks.remove(key);
                     Logger.debug("Urgently loaded chunk: " + key);
-                    return chunk;
-                });
+                    result.complete(chunk);
+                }));
+                return result;
 
             } catch (Exception e) {
                 Logger.warning("Error with urgent chunk loading: " + e.getMessage());
@@ -143,10 +156,18 @@ public class PaperChunkSystem {
                     getChunkAtAsync.invoke(world, chunkX, chunkZ);
 
             String key = getChunkKey(world, chunkX, chunkZ);
-            return future.thenApply(chunk -> {
+            // See loadChunkUrgently: hop to the main thread before completing,
+            // since Paper completes these futures on an unspecified thread.
+            CompletableFuture<Chunk> result = new CompletableFuture<>();
+            future.whenComplete((chunk, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                if (error != null) {
+                    result.completeExceptionally(error);
+                    return;
+                }
                 chunkLoadTimes.put(key, System.currentTimeMillis());
-                return chunk;
-            });
+                result.complete(chunk);
+            }));
+            return result;
 
         } catch (Exception e) {
             Logger.warning("Async chunk loading failed: " + e.getMessage());
