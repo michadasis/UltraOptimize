@@ -120,6 +120,17 @@ public class WatchdogMonitor {
         // Get tick duration from Paper if available
         long tickDuration = getTickDuration();
 
+        // Without Paper's Watchdog class, getTickDuration() can only ever
+        // return <=1000ms (derived from 1000/tps) or the hard-coded 20000ms
+        // near-death case, so any threshold between those - including the
+        // default 10s hang-threshold - could never be reached. The gap
+        // between these checks (scheduled every 5s on the main thread) is a
+        // direct, API-independent measurement of how long the main thread
+        // was actually blocked, so fall back to it in that case.
+        if (!paperWatchdogSupported) {
+            tickDuration = Math.max(tickDuration, timeSinceLastTick);
+        }
+
         // Only process if actually hanging
         if (tickDuration > hangThreshold) {
             handleHang(tickDuration);

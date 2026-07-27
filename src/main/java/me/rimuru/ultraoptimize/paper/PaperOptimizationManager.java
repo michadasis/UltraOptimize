@@ -143,18 +143,22 @@ public class PaperOptimizationManager {
         try {
             if (watchdogMonitor != null) {
                 watchdogMonitor.shutdown();
+                watchdogMonitor = null;
             }
 
             if (regionOptimizer != null) {
                 regionOptimizer.shutdown();
+                regionOptimizer = null;
             }
 
             if (chunkLoader != null) {
                 chunkLoader.shutdown();
+                chunkLoader = null;
             }
 
             if (chunkSystem != null) {
                 chunkSystem.shutdown();
+                chunkSystem = null;
             }
 
             Logger.info("Paper optimization systems stopped");
