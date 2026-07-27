@@ -6,6 +6,7 @@ import me.rimuru.ultraoptimize.paper.PaperOptimizationManager;
 import me.rimuru.ultraoptimize.paper.RegionFileOptimizer;
 import me.rimuru.ultraoptimize.paper.WatchdogMonitor;
 import me.rimuru.ultraoptimize.utils.Logger;
+import me.rimuru.ultraoptimize.utils.Msg;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.Command;
@@ -85,7 +86,7 @@ public class CommandManager implements CommandExecutor {
                     return true;
             }
         } catch (Exception e) {
-            sender.sendMessage("§c[UltraOptimize] Error: " + e.getMessage());
+            Msg.error(sender, "An unexpected error occurred: " + e.getMessage());
             Logger.severe("Command error: " + e.getMessage());
             e.printStackTrace();
             return true;
@@ -94,23 +95,23 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleReload(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.reload")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         plugin.reload();
-        sender.sendMessage("§a[UltraOptimize] Configuration reloaded!");
+        Msg.success(sender, "Configuration reloaded successfully.");
         return true;
     }
 
     private boolean handleClear(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.clear")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         if (args.length < 2) {
-            sender.sendMessage("§cUsage: /uo clear <items|mobs|all|xp|arrows>");
+            Msg.usage(sender, "/uo clear <items|mobs|all|xp|arrows>");
             return true;
         }
 
@@ -118,7 +119,7 @@ public class CommandManager implements CommandExecutor {
         try {
             type = EntityManager.EntityClearType.valueOf(args[1].toUpperCase());
         } catch (IllegalArgumentException e) {
-            sender.sendMessage("§cInvalid type! Use: items, mobs, xp, arrows, or all");
+            Msg.error(sender, "Invalid type! Use: items, mobs, xp, arrows, or all");
             return true;
         }
 
@@ -127,27 +128,26 @@ public class CommandManager implements CommandExecutor {
             removed += plugin.getEntityManager().clearEntities(world, type);
         }
 
-        sender.sendMessage("§a[UltraOptimize] Removed " + removed + " entities!");
+        Msg.success(sender, "Removed §f" + removed + " §aentities.");
         return true;
     }
 
     private boolean handleOptimize(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.optimize")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
-        sender.sendMessage("§a[UltraOptimize] Running manual optimization...");
+        Msg.info(sender, "Running manual optimization...");
         OptimizationManager.OptimizationResult result = plugin.getOptimizationManager().performManualOptimization();
 
-        sender.sendMessage("§a[UltraOptimize] Optimization complete! Removed " +
-                result.entitiesRemoved + " entities.");
+        Msg.success(sender, "Optimization complete! Removed §f" + result.entitiesRemoved + " §aentities.");
         return true;
     }
 
     private boolean handleStats(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.stats")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
@@ -155,47 +155,44 @@ public class CommandManager implements CommandExecutor {
         Map<EntityType, Integer> entityCounts = plugin.getEntityManager().getEntityCounts();
         ChunkPreloader.PreloadStatistics preloadStats = plugin.getChunkPreloader().getStatistics();
 
-        sender.sendMessage("§6§l╔═══════════════════════════╗");
-        sender.sendMessage("§6§l║  UltraOptimize Statistics  ║");
-        sender.sendMessage("§6§l╚═══════════════════════════╝");
-        sender.sendMessage("§eCurrent TPS: §f" + String.format("%.2f", report.currentTPS) +
-                " §7(Avg: " + String.format("%.2f", report.averageTPS) + ")");
-        sender.sendMessage("§eMemory: §f" + report.memoryInfo.usedMemory + "MB §7/ §f" +
+        Msg.header(sender, "UltraOptimize Statistics");
+        Msg.kv(sender, "Current TPS", String.format("%.2f", report.currentTPS) +
+                " §7(avg " + String.format("%.2f", report.averageTPS) + ")");
+        Msg.kv(sender, "Memory", report.memoryInfo.usedMemory + "MB §7/ §f" +
                 report.memoryInfo.totalMemory + "MB §7/ §f" +
-                report.memoryInfo.maxMemory + "MB");
-        sender.sendMessage("§eMemory Usage: §f" + String.format("%.1f", report.memoryInfo.usagePercent) + "%");
-        sender.sendMessage("§eTotal Entities: §f" + report.totalEntities);
-        sender.sendMessage("§eLoaded Chunks: §f" + report.totalChunks);
-        sender.sendMessage("§eSpawn Chunks Preloaded: §f" + preloadStats.chunksPreloaded);
-        sender.sendMessage("§eCurrently Preloading: §f" + (preloadStats.isPreloading ? "§aYes" : "§cNo"));
-        sender.sendMessage("§eAuto-Optimize: §f" + (plugin.getOptimizationManager().isAutoOptimizeEnabled() ? "§aEnabled" : "§cDisabled"));
-        sender.sendMessage("§eSpawn Preloading: §f" + (plugin.getConfigManager().isChunkPreloadingEnabled() ? "§aEnabled" : "§cDisabled"));
-        sender.sendMessage("§eTotal Optimizations: §f" + plugin.getStatisticsManager().getTotalOptimizations());
-        sender.sendMessage("§eLifetime Entities Removed: §f" + plugin.getStatisticsManager().getEntitiesRemoved());
-        sender.sendMessage("§eLifetime Items Merged: §f" + plugin.getStatisticsManager().getItemsMerged());
-        sender.sendMessage("§eLifetime Chunks Preloaded: §f" + plugin.getStatisticsManager().getChunksPreloaded());
+                report.memoryInfo.maxMemory + "MB §7(" +
+                String.format("%.1f", report.memoryInfo.usagePercent) + "%)");
+        Msg.kv(sender, "Total Entities", String.valueOf(report.totalEntities));
+        Msg.kv(sender, "Loaded Chunks", String.valueOf(report.totalChunks));
+        Msg.kv(sender, "Spawn Chunks Preloaded", String.valueOf(preloadStats.chunksPreloaded));
+        Msg.kv(sender, "Currently Preloading", Msg.bool(preloadStats.isPreloading, "Yes", "No"));
+        Msg.kv(sender, "Auto-Optimize", Msg.bool(plugin.getOptimizationManager().isAutoOptimizeEnabled()));
+        Msg.kv(sender, "Spawn Preloading", Msg.bool(plugin.getConfigManager().isChunkPreloadingEnabled()));
+        Msg.kv(sender, "Total Optimizations", String.valueOf(plugin.getStatisticsManager().getTotalOptimizations()));
+        Msg.kv(sender, "Lifetime Entities Removed", String.valueOf(plugin.getStatisticsManager().getEntitiesRemoved()));
+        Msg.kv(sender, "Lifetime Items Merged", String.valueOf(plugin.getStatisticsManager().getItemsMerged()));
+        Msg.kv(sender, "Lifetime Chunks Preloaded", String.valueOf(plugin.getStatisticsManager().getChunksPreloaded()));
         if (plugin.getConfigManager().isOptimizeAI()) {
-            sender.sendMessage("§eMobs with AI Paused: §f" + plugin.getEntityAIManager().getMobsFrozen());
+            Msg.kv(sender, "Mobs with AI Paused", String.valueOf(plugin.getEntityAIManager().getMobsFrozen()));
         }
 
-        sender.sendMessage("");
-        sender.sendMessage("§6§lTop Entities:");
+        Msg.section(sender, "Top Entities");
         entityCounts.entrySet().stream()
                 .sorted(Map.Entry.<EntityType, Integer>comparingByValue().reversed())
                 .limit(5)
-                .forEach(entry -> sender.sendMessage("  §e" + entry.getKey() + ": §f" + entry.getValue()));
+                .forEach(entry -> Msg.kv(sender, 2, entry.getKey().toString(), String.valueOf(entry.getValue())));
 
         return true;
     }
 
     private boolean handleChunks(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.chunks")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         if (args.length < 2) {
-            sender.sendMessage("§cUsage: /uo chunks <unload|info>");
+            Msg.usage(sender, "/uo chunks <unload|info>");
             return true;
         }
 
@@ -203,15 +200,15 @@ public class CommandManager implements CommandExecutor {
 
         if (action.equals("unload")) {
             int unloaded = plugin.getChunkManager().unloadEmptyChunks();
-            sender.sendMessage("§a[UltraOptimize] Unloaded " + unloaded + " empty chunks!");
+            Msg.success(sender, "Unloaded §f" + unloaded + " §aempty chunks.");
         } else if (action.equals("info")) {
             ChunkManager.ChunkStatistics stats = plugin.getChunkManager().getStatistics();
-            sender.sendMessage("§6§l[Chunk Information]");
-            sender.sendMessage("§eTotal Chunks: §f" + stats.totalChunks);
-            sender.sendMessage("§eTracked Chunks: §f" + stats.trackedChunks);
-            sender.sendMessage("§eProblematic Chunks: §f" + stats.problematicChunks);
+            Msg.header(sender, "Chunk Information");
+            Msg.kv(sender, "Total Chunks", String.valueOf(stats.totalChunks));
+            Msg.kv(sender, "Tracked Chunks", String.valueOf(stats.trackedChunks));
+            Msg.kv(sender, "Problematic Chunks", String.valueOf(stats.problematicChunks));
         } else {
-            sender.sendMessage("§cUsage: /uo chunks <unload|info>");
+            Msg.usage(sender, "/uo chunks <unload|info>");
         }
 
         return true;
@@ -219,17 +216,17 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handlePreload(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.preload")) {
-            sender.sendMessage("§c[UltraOptimize] No permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         if (!plugin.getConfigManager().isChunkPreloadingEnabled()) {
-            sender.sendMessage("§c[UltraOptimize] Chunk preloading is disabled in config!");
+            Msg.error(sender, "Chunk preloading is disabled in config.");
             return true;
         }
 
         if (args.length < 2) {
-            sender.sendMessage("§c[UltraOptimize] Usage: /uo preload <info|restart>");
+            Msg.usage(sender, "/uo preload <info|restart>");
             return true;
         }
 
@@ -237,21 +234,21 @@ public class CommandManager implements CommandExecutor {
 
         if (action.equals("info")) {
             ChunkPreloader.PreloadStatistics stats = plugin.getChunkPreloader().getStatistics();
-            sender.sendMessage("§6§l[Spawn Chunk Preloading Statistics]");
-            sender.sendMessage("§eTotal Chunks Preloaded: §f" + stats.chunksPreloaded);
-            sender.sendMessage("§eCurrently Preloading: §f" + (stats.isPreloading ? "§aYes" : "§cNo"));
-            sender.sendMessage("§ePreload Radius: §f" + plugin.getConfigManager().getPreloadRadius() + " chunks");
-            sender.sendMessage("§eChunks/Tick: §f" + plugin.getConfigManager().getPreloadChunksPerTick());
-            sender.sendMessage("§ePattern: §f" + (plugin.getConfigManager().isSpiralPattern() ? "Spiral" : "Square"));
+            Msg.header(sender, "Spawn Chunk Preloading Statistics");
+            Msg.kv(sender, "Total Chunks Preloaded", String.valueOf(stats.chunksPreloaded));
+            Msg.kv(sender, "Currently Preloading", Msg.bool(stats.isPreloading, "Yes", "No"));
+            Msg.kv(sender, "Preload Radius", plugin.getConfigManager().getPreloadRadius() + " chunks");
+            Msg.kv(sender, "Chunks/Tick", String.valueOf(plugin.getConfigManager().getPreloadChunksPerTick()));
+            Msg.kv(sender, "Pattern", plugin.getConfigManager().isSpiralPattern() ? "Spiral" : "Square");
         } else if (action.equals("restart")) {
             if (plugin.getChunkPreloader().isPreloading()) {
-                sender.sendMessage("§c[UltraOptimize] Chunk preloading is already in progress!");
+                Msg.error(sender, "Chunk preloading is already in progress.");
                 return true;
             }
-            sender.sendMessage("§a[UltraOptimize] Restarting spawn chunk preloading...");
+            Msg.info(sender, "Restarting spawn chunk preloading...");
             plugin.getChunkPreloader().restart();
         } else {
-            sender.sendMessage("§c[UltraOptimize] Usage: /uo preload <info|restart>");
+            Msg.usage(sender, "/uo preload <info|restart>");
         }
 
         return true;
@@ -259,63 +256,62 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleGC(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.gc")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
-        sender.sendMessage("§a[UltraOptimize] Running garbage collection...");
+        Msg.info(sender, "Running garbage collection...");
         plugin.getPerformanceMonitor().performGarbageCollection();
         return true;
     }
 
     private boolean handleAuto(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.auto")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         plugin.getOptimizationManager().toggleAutoOptimize();
         boolean enabled = plugin.getOptimizationManager().isAutoOptimizeEnabled();
-        sender.sendMessage("§a[UltraOptimize] Auto-optimization " +
-                (enabled ? "§aenabled" : "§cdisabled"));
+        Msg.success(sender, "Auto-optimization " + Msg.bool(enabled, "enabled", "disabled") + "§a.");
         return true;
     }
 
     private boolean handleMerge(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.merge")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
-        sender.sendMessage("§a[UltraOptimize] Merging items and XP orbs...");
+        Msg.info(sender, "Merging items and XP orbs...");
         int merged = 0;
         for (World world : Bukkit.getWorlds()) {
             merged += plugin.getEntityManager().optimizeWorld(world);
         }
-        sender.sendMessage("§a[UltraOptimize] Merged " + merged + " entities!");
+        Msg.success(sender, "Merged §f" + merged + " §aentities.");
         return true;
     }
 
     private boolean handleView(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.view")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         if (!plugin.getPerformanceMonitor().isViewDistanceSupported()) {
-            sender.sendMessage("§c[UltraOptimize] View distance management is not supported on this server!");
-            sender.sendMessage("§7" + viewDistanceUnsupportedReason());
+            Msg.error(sender, "View distance management is not supported on this server.");
+            Msg.send(sender, "§7" + viewDistanceUnsupportedReason());
             return true;
         }
 
         if (args.length < 3) {
-            sender.sendMessage("§cUsage: /uo view <world> <distance>");
+            Msg.usage(sender, "/uo view <world> <distance>");
             return true;
         }
 
         World world = Bukkit.getWorld(args[1]);
         if (world == null) {
-            sender.sendMessage("§cWorld not found!");
+            Msg.error(sender, "World not found: §f" + args[1]);
             return true;
         }
 
@@ -323,15 +319,14 @@ public class CommandManager implements CommandExecutor {
             int distance = Integer.parseInt(args[2]);
 
             if (distance < 2 || distance > 32) {
-                sender.sendMessage("§cView distance must be between 2 and 32!");
+                Msg.error(sender, "View distance must be between 2 and 32.");
                 return true;
             }
 
             plugin.getPerformanceMonitor().setWorldViewDistance(world, distance);
-            sender.sendMessage("§a[UltraOptimize] Set view distance to " + distance +
-                    " for " + world.getName());
+            Msg.success(sender, "Set view distance to §f" + distance + " §afor §f" + world.getName() + "§a.");
         } catch (NumberFormatException e) {
-            sender.sendMessage("§cInvalid distance!");
+            Msg.error(sender, "Invalid distance! Must be a whole number.");
         }
 
         return true;
@@ -339,7 +334,7 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleReport(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.report")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
@@ -349,7 +344,7 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleInfo(CommandSender sender) {
         if (!sender.hasPermission("ultraoptimize.info")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
@@ -358,77 +353,66 @@ public class CommandManager implements CommandExecutor {
     }
 
     private void generateReport(CommandSender sender) {
-        sender.sendMessage("§a[UltraOptimize] Generating performance report...");
+        Msg.info(sender, "Generating performance report...");
 
         PerformanceMonitor.PerformanceReport report = plugin.getPerformanceMonitor().generateReport();
         ChunkPreloader.PreloadStatistics preloadStats = plugin.getChunkPreloader().getStatistics();
 
-        StringBuilder output = new StringBuilder();
-        output.append("\n§6§l╔═══════════════════════════════════╗\n");
-        output.append("§6§l║    Performance Analysis Report    ║\n");
-        output.append("§6§l╚═══════════════════════════════════╝\n\n");
+        Msg.header(sender, "Performance Analysis Report");
 
-        output.append("§e§lServer Performance:\n");
-        output.append("  §7TPS: §f").append(String.format("%.2f", report.currentTPS));
-        if (report.currentTPS < 15) output.append(" §c(CRITICAL)");
-        else if (report.currentTPS < 18) output.append(" §e(WARNING)");
-        else output.append(" §a(GOOD)");
-        output.append("\n  §7Avg TPS: §f").append(String.format("%.2f", report.averageTPS)).append("\n\n");
+        Msg.section(sender, "Server Performance");
+        String tpsStatus = report.currentTPS < 15 ? "§c(CRITICAL)" :
+                report.currentTPS < 18 ? "§e(WARNING)" : "§a(GOOD)";
+        Msg.kv(sender, 2, "TPS", String.format("%.2f", report.currentTPS) + " " + tpsStatus);
+        Msg.kv(sender, 2, "Avg TPS", String.format("%.2f", report.averageTPS));
 
-        output.append("§e§lMemory Usage:\n");
-        output.append("  §7Used: §f").append(report.memoryInfo.usedMemory).append("MB / ")
-                .append(report.memoryInfo.maxMemory).append("MB");
-        output.append(" §7(").append(String.format("%.1f", report.memoryInfo.usagePercent)).append("%)");
-        if (report.memoryInfo.usagePercent > 90) output.append(" §c(CRITICAL)");
-        else if (report.memoryInfo.usagePercent > 75) output.append(" §e(WARNING)");
-        else output.append(" §a(GOOD)");
-        output.append("\n\n");
+        Msg.section(sender, "Memory Usage");
+        String memStatus = report.memoryInfo.usagePercent > 90 ? "§c(CRITICAL)" :
+                report.memoryInfo.usagePercent > 75 ? "§e(WARNING)" : "§a(GOOD)";
+        Msg.kv(sender, 2, "Used", report.memoryInfo.usedMemory + "MB §7/ §f" + report.memoryInfo.maxMemory +
+                "MB §7(" + String.format("%.1f", report.memoryInfo.usagePercent) + "%) " + memStatus);
 
-        output.append("§e§lWorld Statistics:\n");
-        output.append("  §7Total Entities: §f").append(report.totalEntities);
-        if (report.totalEntities > 5000) output.append(" §e(HIGH)");
-        output.append("\n  §7Loaded Chunks: §f").append(report.totalChunks).append("\n");
-        output.append("  §7Preloaded Chunks: §f").append(preloadStats.preloadedChunksCount).append("\n");
-        output.append("  §7Entities/Chunk: §f").append(String.format("%.2f", report.entitiesPerChunk)).append("\n\n");
+        Msg.section(sender, "World Statistics");
+        String entityNote = report.totalEntities > 5000 ? " §e(HIGH)" : "";
+        Msg.kv(sender, 2, "Total Entities", report.totalEntities + entityNote);
+        Msg.kv(sender, 2, "Loaded Chunks", String.valueOf(report.totalChunks));
+        Msg.kv(sender, 2, "Preloaded Chunks", String.valueOf(preloadStats.preloadedChunksCount));
+        Msg.kv(sender, 2, "Entities/Chunk", String.format("%.2f", report.entitiesPerChunk));
 
-        output.append("§e§lChunk Preloading:\n");
-        output.append("  §7Status: ").append(plugin.getConfigManager().isChunkPreloadingEnabled() ? "§aEnabled" : "§cDisabled").append("\n");
-        output.append("  §7Queue Size: §f").append(preloadStats.queueSize).append("\n");
-        output.append("  §7Session Preloaded: §f").append(preloadStats.chunksPreloaded).append("\n\n");
+        Msg.section(sender, "Chunk Preloading");
+        Msg.kv(sender, 2, "Status", Msg.bool(plugin.getConfigManager().isChunkPreloadingEnabled()));
+        Msg.kv(sender, 2, "Queue Size", String.valueOf(preloadStats.queueSize));
+        Msg.kv(sender, 2, "Session Preloaded", String.valueOf(preloadStats.chunksPreloaded));
 
-        output.append("§e§lRecommendations:\n");
+        Msg.section(sender, "Recommendations");
         if (report.currentTPS < 18) {
-            output.append("  §c⚠ Low TPS detected. Consider:\n");
-            output.append("    §7- Running /uo optimize\n");
-            output.append("    §7- Reducing entity limits\n");
-            output.append("    §7- Lowering preload radius\n");
+            Msg.send(sender, "  §c⚠ Low TPS detected. Consider:");
+            Msg.send(sender, "    §7- Running /uo optimize");
+            Msg.send(sender, "    §7- Reducing entity limits");
+            Msg.send(sender, "    §7- Lowering preload radius");
         }
         if (report.memoryInfo.usagePercent > 80) {
-            output.append("  §c⚠ High memory usage. Consider:\n");
-            output.append("    §7- Running /uo gc\n");
-            output.append("    §7- Reducing preload radius\n");
+            Msg.send(sender, "  §c⚠ High memory usage. Consider:");
+            Msg.send(sender, "    §7- Running /uo gc");
+            Msg.send(sender, "    §7- Reducing preload radius");
         }
         if (report.currentTPS >= 19 && report.memoryInfo.usagePercent < 70) {
-            output.append("  §a✓ Server is running optimally!\n");
+            Msg.send(sender, "  §a✓ Server is running optimally!");
         }
-
-        sender.sendMessage(output.toString());
     }
 
     private void showPluginInfo(CommandSender sender) {
-        sender.sendMessage("§6§l╔═══════════════════════════╗");
-        sender.sendMessage("§6§l║   UltraOptimize v" + plugin.getDescription().getVersion() + "      ║");
-        sender.sendMessage("§6§l╚═══════════════════════════╝");
-        sender.sendMessage("§eStatus: §aRunning");
-        sender.sendMessage("§eAuto-Optimize: " + (plugin.getOptimizationManager().isAutoOptimizeEnabled() ? "§aEnabled" : "§cDisabled"));
-        sender.sendMessage("§eChunk Preloading: " + (plugin.getConfigManager().isChunkPreloadingEnabled() ? "§aEnabled" : "§cDisabled"));
-        sender.sendMessage("§ePreload Radius: §f" + plugin.getConfigManager().getPreloadRadius() + " chunks");
-        sender.sendMessage("§eOptimization Interval: §f" + plugin.getConfigManager().getAutoOptimizeInterval() + "s");
-        sender.sendMessage("§eTPS Threshold: §f" + plugin.getConfigManager().getTpsThreshold());
+        Msg.header(sender, "UltraOptimize v" + plugin.getDescription().getVersion());
+        Msg.kv(sender, "Status", "§aRunning");
+        Msg.kv(sender, "Auto-Optimize", Msg.bool(plugin.getOptimizationManager().isAutoOptimizeEnabled()));
+        Msg.kv(sender, "Chunk Preloading", Msg.bool(plugin.getConfigManager().isChunkPreloadingEnabled()));
+        Msg.kv(sender, "Preload Radius", plugin.getConfigManager().getPreloadRadius() + " chunks");
+        Msg.kv(sender, "Optimization Interval", plugin.getConfigManager().getAutoOptimizeInterval() + "s");
+        Msg.kv(sender, "TPS Threshold", String.valueOf(plugin.getConfigManager().getTpsThreshold()));
         String viewDistanceStatus = plugin.getPerformanceMonitor().isViewDistanceSupported()
                 ? "§aSupported"
-                : "§cNot Supported (" + viewDistanceUnsupportedReason() + ")";
-        sender.sendMessage("§eView Distance Control: " + viewDistanceStatus);
+                : "§cNot Supported §7(" + viewDistanceUnsupportedReason() + ")";
+        Msg.kv(sender, "View Distance Control", viewDistanceStatus);
     }
 
     /**
@@ -444,47 +428,45 @@ public class CommandManager implements CommandExecutor {
     }
 
     private void showHelp(CommandSender sender) {
-        sender.sendMessage("§6§l╔═══════════════════════════╗");
-        sender.sendMessage("§6§l║   UltraOptimize Commands   ║");
-        sender.sendMessage("§6§l╚═══════════════════════════╝");
-        sender.sendMessage("§e/uo reload §7- Reload configuration");
-        sender.sendMessage("§e/uo clear <type> §7- Clear entities (items/mobs/all/xp/arrows)");
-        sender.sendMessage("§e/uo optimize §7- Run manual optimization");
-        sender.sendMessage("§e/uo stats §7- Show detailed statistics");
-        sender.sendMessage("§e/uo chunks <action> §7- Manage chunks (unload/info)");
-        sender.sendMessage("§e/uo preload <action> §7- Chunk preloading (info/restart)");
-        sender.sendMessage("§e/uo gc §7- Run garbage collection");
-        sender.sendMessage("§e/uo auto §7- Toggle auto-optimization");
-        sender.sendMessage("§e/uo merge §7- Merge nearby items/xp");
+        Msg.header(sender, "UltraOptimize Commands");
+        Msg.send(sender, "§e/uo reload §8- §7Reload configuration");
+        Msg.send(sender, "§e/uo clear <type> §8- §7Clear entities (items/mobs/all/xp/arrows)");
+        Msg.send(sender, "§e/uo optimize §8- §7Run manual optimization");
+        Msg.send(sender, "§e/uo stats §8- §7Show detailed statistics");
+        Msg.send(sender, "§e/uo chunks <action> §8- §7Manage chunks (unload/info)");
+        Msg.send(sender, "§e/uo preload <action> §8- §7Chunk preloading (info/restart)");
+        Msg.send(sender, "§e/uo gc §8- §7Run garbage collection");
+        Msg.send(sender, "§e/uo auto §8- §7Toggle auto-optimization");
+        Msg.send(sender, "§e/uo merge §8- §7Merge nearby items/xp");
         if (plugin.getPerformanceMonitor().isViewDistanceSupported()) {
-            sender.sendMessage("§e/uo view <world> <dist> §7- Set view distance (Paper only)");
+            Msg.send(sender, "§e/uo view <world> <dist> §8- §7Set view distance (Paper only)");
         }
-        sender.sendMessage("§e/uo report §7- Generate performance report");
-        sender.sendMessage("§e/uo info §7- Show plugin configuration");
+        Msg.send(sender, "§e/uo report §8- §7Generate performance report");
+        Msg.send(sender, "§e/uo info §8- §7Show plugin configuration");
 
         // Paper-specific commands
         if (plugin.getPaperManager().isPaperDetected()) {
-            sender.sendMessage("");
-            sender.sendMessage("§6§lPaper Commands:");
-            sender.sendMessage("§e/uo paper stats §7- Paper optimization stats");
-            sender.sendMessage("§e/uo paper optimize §7- Run Paper optimization");
-            sender.sendMessage("§e/uo paper watchdog <action> §7- Watchdog management");
-            sender.sendMessage("§e/uo paper regions <action> §7- Region file management");
+            Msg.section(sender, "Paper Commands");
+            Msg.send(sender, "§e/uo paper stats §8- §7Paper optimization stats");
+            Msg.send(sender, "§e/uo paper optimize §8- §7Run Paper optimization");
+            Msg.send(sender, "§e/uo paper watchdog <action> §8- §7Watchdog management");
+            Msg.send(sender, "§e/uo paper regions <action> §8- §7Region file management");
         }
     }
+
     private boolean handlePaper(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.paper")) {
-            sender.sendMessage("§cNo permission!");
+            Msg.noPermission(sender);
             return true;
         }
 
         if (!plugin.getPaperManager().isPaperDetected()) {
-            sender.sendMessage("§c[UltraOptimize] Not running on Paper server!");
+            Msg.error(sender, "Not running on a Paper server.");
             return true;
         }
 
         if (args.length < 2) {
-            sender.sendMessage("§cUsage: /uo paper <stats|optimize|watchdog|regions>");
+            Msg.usage(sender, "/uo paper <stats|optimize|watchdog|regions>");
             return true;
         }
 
@@ -500,7 +482,7 @@ public class CommandManager implements CommandExecutor {
             case "regions":
                 return handleRegions(sender, args);
             default:
-                sender.sendMessage("§cUsage: /uo paper <stats|optimize|watchdog|regions>");
+                Msg.usage(sender, "/uo paper <stats|optimize|watchdog|regions>");
                 return true;
         }
     }
@@ -508,62 +490,56 @@ public class CommandManager implements CommandExecutor {
     private boolean handlePaperStats(CommandSender sender) {
         PaperOptimizationManager.PaperStats stats = plugin.getPaperManager().getStatistics();
 
-        sender.sendMessage("§6§l╔══════════════════════════╗");
-        sender.sendMessage("§6§l║  Paper Optimization Stats  ║");
-        sender.sendMessage("§6§l╚══════════════════════════╝");
-
-        sender.sendMessage("§eServer Version: §f" + stats.serverVersion);
-        sender.sendMessage("");
+        Msg.header(sender, "Paper Optimization Stats");
+        Msg.kv(sender, "Server Version", stats.serverVersion);
 
         // Chunk System Stats
         if (stats.chunkSystemStats != null) {
-            sender.sendMessage("§6§lChunk System:");
-            sender.sendMessage("  §eActive Tickets: §f" + stats.chunkSystemStats.activeTickets);
-            sender.sendMessage("  §eTracked Chunks: §f" + stats.chunkSystemStats.trackedChunks);
-            sender.sendMessage("  §ePriority Chunks: §f" + stats.chunkSystemStats.priorityChunks);
-            sender.sendMessage("  §ePaper Support: §f" + (stats.chunkSystemStats.paperSupported ? "§aYes" : "§cNo"));
+            Msg.section(sender, "Chunk System");
+            Msg.kv(sender, 2, "Active Tickets", String.valueOf(stats.chunkSystemStats.activeTickets));
+            Msg.kv(sender, 2, "Tracked Chunks", String.valueOf(stats.chunkSystemStats.trackedChunks));
+            Msg.kv(sender, 2, "Priority Chunks", String.valueOf(stats.chunkSystemStats.priorityChunks));
+            Msg.kv(sender, 2, "Paper Support", Msg.bool(stats.chunkSystemStats.paperSupported, "Yes", "No"));
 
             if (!stats.chunkSystemStats.ticketsByType.isEmpty()) {
-                sender.sendMessage("  §eTickets by Type:");
+                Msg.send(sender, "  §eTickets by Type:");
                 stats.chunkSystemStats.ticketsByType.forEach((type, count) ->
-                        sender.sendMessage("    §7" + type + ": §f" + count));
+                        Msg.kv(sender, 4, type.toString(), String.valueOf(count)));
             }
-            sender.sendMessage("");
         }
 
         // Watchdog Stats
         if (stats.watchdogStats != null) {
-            sender.sendMessage("§6§lWatchdog Monitor:");
-            sender.sendMessage("  §eTotal Hangs: §f" + stats.watchdogStats.totalHangs);
-            sender.sendMessage("  §eTotal Hang Time: §f" + formatTime(stats.watchdogStats.totalHangTime));
-            sender.sendMessage("  §eAverage Hang: §f" + stats.watchdogStats.averageHangDuration + "ms");
-            sender.sendMessage("  §eEmergency Mode: §f" + (stats.watchdogStats.emergencyMode ? "§cACTIVE" : "§aInactive"));
-            sender.sendMessage("  §ePaper Watchdog: §f" + (stats.watchdogStats.paperWatchdogSupported ? "§aYes" : "§cNo"));
+            Msg.section(sender, "Watchdog Monitor");
+            Msg.kv(sender, 2, "Total Hangs", String.valueOf(stats.watchdogStats.totalHangs));
+            Msg.kv(sender, 2, "Total Hang Time", formatTime(stats.watchdogStats.totalHangTime));
+            Msg.kv(sender, 2, "Average Hang", stats.watchdogStats.averageHangDuration + "ms");
+            Msg.kv(sender, 2, "Emergency Mode", stats.watchdogStats.emergencyMode ? "§cACTIVE" : "§aInactive");
+            Msg.kv(sender, 2, "Paper Watchdog", Msg.bool(stats.watchdogStats.paperWatchdogSupported, "Yes", "No"));
 
             if (!stats.watchdogStats.hangCauses.isEmpty()) {
-                sender.sendMessage("  §eHang Causes:");
+                Msg.send(sender, "  §eHang Causes:");
                 stats.watchdogStats.hangCauses.entrySet().stream()
                         .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
                         .limit(5)
-                        .forEach(entry -> sender.sendMessage("    §7" + entry.getKey() + ": §f" + entry.getValue()));
+                        .forEach(entry -> Msg.kv(sender, 4, entry.getKey(), String.valueOf(entry.getValue())));
             }
-            sender.sendMessage("");
         }
 
         // Region File Stats
         if (stats.regionStats != null) {
-            sender.sendMessage("§6§lRegion Files:");
-            sender.sendMessage("  §eTotal Regions: §f" + stats.regionStats.totalRegions);
-            sender.sendMessage("  §eTotal Size: §f" + formatBytes(stats.regionStats.totalSize));
-            sender.sendMessage("  §eOptimized: §f" + stats.regionStats.optimizedRegions);
-            sender.sendMessage("  §eBytes Freed: §f" + formatBytes(stats.regionStats.bytesFreed));
-            sender.sendMessage("  §eIncremental Save: §f" + (stats.regionStats.incrementalSaving ? "§aEnabled" : "§cDisabled"));
+            Msg.section(sender, "Region Files");
+            Msg.kv(sender, 2, "Total Regions", String.valueOf(stats.regionStats.totalRegions));
+            Msg.kv(sender, 2, "Total Size", formatBytes(stats.regionStats.totalSize));
+            Msg.kv(sender, 2, "Optimized", String.valueOf(stats.regionStats.optimizedRegions));
+            Msg.kv(sender, 2, "Bytes Freed", formatBytes(stats.regionStats.bytesFreed));
+            Msg.kv(sender, 2, "Incremental Save", Msg.bool(stats.regionStats.incrementalSaving));
 
             if (!stats.regionStats.sizeByWorld.isEmpty()) {
-                sender.sendMessage("  §eSize by World:");
+                Msg.send(sender, "  §eSize by World:");
                 stats.regionStats.sizeByWorld.forEach((world, size) ->
-                        sender.sendMessage("    §7" + world + ": §f" + formatBytes(size) +
-                                " (§e" + stats.regionStats.countByWorld.get(world) + " §7regions)"));
+                        Msg.send(sender, "    §7" + world + "§8: §f" + formatBytes(size) +
+                                " §7(§e" + stats.regionStats.countByWorld.get(world) + " §7regions)"));
             }
         }
 
@@ -571,19 +547,19 @@ public class CommandManager implements CommandExecutor {
     }
 
     private boolean handlePaperOptimize(CommandSender sender) {
-        sender.sendMessage("§a[UltraOptimize] Starting Paper optimization...");
+        Msg.info(sender, "Starting Paper optimization...");
 
         PaperOptimizationManager.PaperOptimizationResult result =
                 plugin.getPaperManager().performOptimization();
 
         if (result.success) {
-            sender.sendMessage("§a[UltraOptimize] Paper optimization complete!");
-            sender.sendMessage("§eRegions Optimized: §f" + result.regionsOptimized);
-            sender.sendMessage("§eEmpty Regions Removed: §f" + result.emptyRegionsRemoved);
-            sender.sendMessage("§eBytes Freed: §f" + formatBytes(result.bytesFreed));
-            sender.sendMessage("§eDuration: §f" + result.duration + "ms");
+            Msg.success(sender, "Paper optimization complete!");
+            Msg.kv(sender, "Regions Optimized", String.valueOf(result.regionsOptimized));
+            Msg.kv(sender, "Empty Regions Removed", String.valueOf(result.emptyRegionsRemoved));
+            Msg.kv(sender, "Bytes Freed", formatBytes(result.bytesFreed));
+            Msg.kv(sender, "Duration", result.duration + "ms");
         } else {
-            sender.sendMessage("§c[UltraOptimize] Optimization failed: " + result.error);
+            Msg.error(sender, "Optimization failed: §f" + result.error);
         }
 
         return true;
@@ -591,13 +567,13 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleWatchdog(CommandSender sender, String[] args) {
         if (args.length < 3) {
-            sender.sendMessage("§cUsage: /uo paper watchdog <status|reset|emergency>");
+            Msg.usage(sender, "/uo paper watchdog <status|reset|emergency>");
             return true;
         }
 
         WatchdogMonitor monitor = plugin.getPaperManager().getWatchdogMonitor();
         if (monitor == null) {
-            sender.sendMessage("§cWatchdog monitor not available!");
+            Msg.error(sender, "Watchdog monitor not available.");
             return true;
         }
 
@@ -606,34 +582,34 @@ public class CommandManager implements CommandExecutor {
         switch (action) {
             case "status":
                 WatchdogMonitor.WatchdogStats stats = monitor.getStatistics();
-                sender.sendMessage("§6§l[Watchdog Status]");
-                sender.sendMessage("§eTotal Hangs: §f" + stats.totalHangs);
-                sender.sendMessage("§eCurrent Hang Count: §f" + stats.currentHangCount);
-                sender.sendMessage("§eEmergency Mode: §f" + (stats.emergencyMode ? "§cACTIVE" : "§aInactive"));
+                Msg.header(sender, "Watchdog Status");
+                Msg.kv(sender, "Total Hangs", String.valueOf(stats.totalHangs));
+                Msg.kv(sender, "Current Hang Count", String.valueOf(stats.currentHangCount));
+                Msg.kv(sender, "Emergency Mode", stats.emergencyMode ? "§cACTIVE" : "§aInactive");
 
                 if (!stats.recentHangs.isEmpty()) {
-                    sender.sendMessage("§eRecent Hangs:");
+                    Msg.section(sender, "Recent Hangs");
                     stats.recentHangs.stream().limit(5).forEach(hang ->
-                            sender.sendMessage("  §7" + hang.toString()));
+                            Msg.send(sender, "  §7- §f" + hang));
                 }
                 break;
 
             case "reset":
                 monitor.resetHangCount();
-                sender.sendMessage("§a[UltraOptimize] Watchdog hang counter reset");
+                Msg.success(sender, "Watchdog hang counter reset.");
                 break;
 
             case "emergency":
                 if (monitor.isEmergencyMode()) {
-                    sender.sendMessage("§c[UltraOptimize] Server is currently in EMERGENCY MODE");
-                    sender.sendMessage("§7Emergency mode will deactivate when performance improves");
+                    Msg.error(sender, "Server is currently in EMERGENCY MODE.");
+                    Msg.send(sender, "§7Emergency mode will deactivate when performance improves.");
                 } else {
-                    sender.sendMessage("§a[UltraOptimize] Server is not in emergency mode");
+                    Msg.success(sender, "Server is not in emergency mode.");
                 }
                 break;
 
             default:
-                sender.sendMessage("§cUsage: /uo paper watchdog <status|reset|emergency>");
+                Msg.usage(sender, "/uo paper watchdog <status|reset|emergency>");
                 break;
         }
 
@@ -642,13 +618,13 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleRegions(CommandSender sender, String[] args) {
         if (args.length < 3) {
-            sender.sendMessage("§cUsage: /uo paper regions <stats|optimize|clean> [world]");
+            Msg.usage(sender, "/uo paper regions <stats|optimize|clean> [world]");
             return true;
         }
 
         RegionFileOptimizer optimizer = plugin.getPaperManager().getRegionOptimizer();
         if (optimizer == null) {
-            sender.sendMessage("§cRegion optimizer not available!");
+            Msg.error(sender, "Region optimizer not available.");
             return true;
         }
 
@@ -657,38 +633,38 @@ public class CommandManager implements CommandExecutor {
         switch (action) {
             case "stats":
                 RegionFileOptimizer.RegionStats stats = optimizer.getStatistics();
-                sender.sendMessage("§6§l[Region File Statistics]");
-                sender.sendMessage("§eTotal Regions: §f" + stats.totalRegions);
-                sender.sendMessage("§eTotal Size: §f" + formatBytes(stats.totalSize));
-                sender.sendMessage("§eOptimized: §f" + stats.optimizedRegions);
-                sender.sendMessage("§eBytes Freed (lifetime): §f" + formatBytes(stats.bytesFreed));
+                Msg.header(sender, "Region File Statistics");
+                Msg.kv(sender, "Total Regions", String.valueOf(stats.totalRegions));
+                Msg.kv(sender, "Total Size", formatBytes(stats.totalSize));
+                Msg.kv(sender, "Optimized", String.valueOf(stats.optimizedRegions));
+                Msg.kv(sender, "Bytes Freed (lifetime)", formatBytes(stats.bytesFreed));
                 break;
 
             case "optimize":
                 World world = getTargetWorld(sender, args, 3);
                 if (world == null) return true;
 
-                sender.sendMessage("§a[UltraOptimize] Optimizing region files for " + world.getName() + "...");
+                Msg.info(sender, "Optimizing region files for §f" + world.getName() + "§f...");
                 RegionFileOptimizer.OptimizationResult result = optimizer.optimizeRegionFiles(world);
 
-                sender.sendMessage("§a[UltraOptimize] Region optimization complete:");
-                sender.sendMessage("§eFiles Processed: §f" + result.filesProcessed);
-                sender.sendMessage("§eFiles Optimized: §f" + result.filesOptimized);
-                sender.sendMessage("§eBytes Freed: §f" + formatBytes(result.bytesFreed));
-                sender.sendMessage("§eDuration: §f" + result.duration + "ms");
+                Msg.success(sender, "Region optimization complete!");
+                Msg.kv(sender, "Files Processed", String.valueOf(result.filesProcessed));
+                Msg.kv(sender, "Files Optimized", String.valueOf(result.filesOptimized));
+                Msg.kv(sender, "Bytes Freed", formatBytes(result.bytesFreed));
+                Msg.kv(sender, "Duration", result.duration + "ms");
                 break;
 
             case "clean":
                 World targetWorld = getTargetWorld(sender, args, 3);
                 if (targetWorld == null) return true;
 
-                sender.sendMessage("§a[UltraOptimize] Removing empty region files from " + targetWorld.getName() + "...");
+                Msg.info(sender, "Removing empty region files from §f" + targetWorld.getName() + "§f...");
                 int removed = optimizer.removeEmptyRegions(targetWorld);
-                sender.sendMessage("§a[UltraOptimize] Removed " + removed + " empty region files");
+                Msg.success(sender, "Removed §f" + removed + " §aempty region files.");
                 break;
 
             default:
-                sender.sendMessage("§cUsage: /uo paper regions <stats|optimize|clean> [world]");
+                Msg.usage(sender, "/uo paper regions <stats|optimize|clean> [world]");
                 break;
         }
 
@@ -699,14 +675,14 @@ public class CommandManager implements CommandExecutor {
         if (args.length > index) {
             World world = Bukkit.getWorld(args[index]);
             if (world == null) {
-                sender.sendMessage("§cWorld not found: " + args[index]);
+                Msg.error(sender, "World not found: §f" + args[index]);
                 return null;
             }
             return world;
         } else if (sender instanceof org.bukkit.entity.Player) {
             return ((org.bukkit.entity.Player) sender).getWorld();
         } else {
-            sender.sendMessage("§cPlease specify a world name");
+            Msg.error(sender, "Please specify a world name.");
             return null;
         }
     }
