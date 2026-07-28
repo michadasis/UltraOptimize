@@ -51,8 +51,11 @@ public class EntityListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onItemSpawn(ItemSpawnEvent event) {
         try {
-            // Update entity tracking
-            plugin.getEntityManager().updateEntityCounts();
+            // Entity tracking is refreshed on a timer (EntityManager's
+            // entityCountTask) rather than here - this event can fire
+            // extremely often (mining, farms), and updateEntityCounts() is a
+            // full Bukkit.getWorlds()/world.getEntities() scan, so running it
+            // per-event turned every item drop into a server-wide entity scan.
 
             // Auto-merge items if enabled
             if (config.isAutoMergeItems()) {
@@ -81,8 +84,9 @@ public class EntityListener implements Listener {
                 event.setDroppedExp(0);
             }
 
-            // Update entity counts
-            plugin.getEntityManager().updateEntityCounts();
+            // Entity tracking is refreshed on a timer (EntityManager's
+            // entityCountTask) - see onItemSpawn above for why this isn't
+            // done inline here.
 
         } catch (Exception e) {
             Logger.warning("Error handling entity death: " + e.getMessage());

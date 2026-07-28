@@ -16,6 +16,12 @@ import java.util.stream.Collectors;
 public class EntityManager {
 
     private static final long CLEANUP_INTERVAL_TICKS = 20L * 300; // 5 minutes
+    // entityCounts backs the purely cosmetic "Top Entities" section of /uo
+    // stats, so it doesn't need per-event freshness - refreshing it on a
+    // short timer instead of inline in event handlers is what keeps
+    // updateEntityCounts()'s full Bukkit.getWorlds()/world.getEntities()
+    // scan off the hot path (see EntityListener).
+    private static final long ENTITY_COUNT_INTERVAL_TICKS = 100L; // 5 seconds
 
     private final UltraOptimize plugin;
     private final ConfigManager config;
@@ -24,6 +30,7 @@ public class EntityManager {
     private final Map<Location, Long> lastMergeTime;
 
     private BukkitTask cleanupTask;
+    private BukkitTask entityCountTask;
 
     public EntityManager(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -37,7 +44,7 @@ public class EntityManager {
      * get pruned as a side effect of optimizeWorld() running (auto-optimize
      * triggering or a manual /uo optimize), so a healthy server that never
      * dips below the TPS threshold would otherwise grow this map forever as
-     * items merge.
+     * items merge. Also starts the periodic entityCounts refresh.
      */
     public void start() {
         cleanupTask = new BukkitRunnable() {
@@ -46,11 +53,21 @@ public class EntityManager {
                 cleanupMergeTimeCache();
             }
         }.runTaskTimer(plugin, CLEANUP_INTERVAL_TICKS, CLEANUP_INTERVAL_TICKS);
+
+        entityCountTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                updateEntityCounts();
+            }
+        }.runTaskTimer(plugin, ENTITY_COUNT_INTERVAL_TICKS, ENTITY_COUNT_INTERVAL_TICKS);
     }
 
     public void shutdown() {
         if (cleanupTask != null) {
             cleanupTask.cancel();
+        }
+        if (entityCountTask != null) {
+            entityCountTask.cancel();
         }
     }
 

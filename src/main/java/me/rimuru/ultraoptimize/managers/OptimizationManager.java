@@ -13,11 +13,23 @@ import java.util.List;
 
 public class OptimizationManager {
 
+    // System.gc() forces a full stop-the-world collection. Gating it on
+    // isMemoryHigh() (>75% heap used) meant it fired on almost every
+    // auto-optimize cycle on a lot of real servers, since G1 routinely lets
+    // used heap sit in that range between collections as normal steady-state
+    // behavior - so instead of relieving pressure, it was adding a full GC
+    // pause on top of whatever TPS drop triggered auto-optimize in the first
+    // place. Require genuine critical usage (isMemoryCritical(), >90%) and
+    // space forced collections out so a sustained critical state can't
+    // trigger back-to-back full GCs every auto-optimize interval either.
+    private static final long MIN_FORCED_GC_INTERVAL_MILLIS = 5 * 60 * 1000L; // 5 minutes
+
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
     private BukkitTask autoOptimizeTask;
     private long lastOptimizationTime;
+    private long lastForcedGCTime;
 
     public OptimizationManager(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -85,9 +97,13 @@ public class OptimizationManager {
             // Clear redstone event tracking
             // This would be handled by RedstoneListener
 
-            // Perform garbage collection if memory is high
-            if (plugin.getPerformanceMonitor().isMemoryHigh()) {
+            // Perform garbage collection only under genuine memory pressure,
+            // and no more than once per MIN_FORCED_GC_INTERVAL_MILLIS.
+            long now = System.currentTimeMillis();
+            if (plugin.getPerformanceMonitor().isMemoryCritical() &&
+                    now - lastForcedGCTime >= MIN_FORCED_GC_INTERVAL_MILLIS) {
                 plugin.getPerformanceMonitor().performGarbageCollection();
+                lastForcedGCTime = now;
                 result.gcPerformed = true;
             }
 
