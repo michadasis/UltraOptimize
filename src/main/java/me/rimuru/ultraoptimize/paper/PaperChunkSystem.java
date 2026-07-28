@@ -6,6 +6,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -17,6 +19,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * Supports intelligent chunk loading, tickets, and async operations
  */
 public class PaperChunkSystem {
+
+    // chunkLoadTimes only ever grows via loadChunkUrgently()/loadChunkAsync() -
+    // there's no natural per-entry removal point (unlike activeTickets, which
+    // is removed via removeChunkTicket()), so on a long-lived server every
+    // distinct chunk ever async/urgently loaded would otherwise sit in this
+    // map forever. Sweep out anything older than this on a timer instead.
+    private static final long STALE_ENTRY_MILLIS = 600_000L; // 10 minutes
+    private static final long CLEANUP_INTERVAL_TICKS = 20L * 300; // 5 minutes
 
     private final UltraOptimize plugin;
     private final Map<String, ChunkTicket> activeTickets;
@@ -30,6 +40,8 @@ public class PaperChunkSystem {
     private Method removePluginChunkTicketMethod;
     private boolean paperAPIsSupported;
 
+    private BukkitTask cleanupTask;
+
     public PaperChunkSystem(UltraOptimize plugin) {
         this.plugin = plugin;
         this.activeTickets = new ConcurrentHashMap<>();
@@ -37,6 +49,17 @@ public class PaperChunkSystem {
         this.priorityChunks = ConcurrentHashMap.newKeySet();
 
         initializePaperAPIs();
+        startCleanupTask();
+    }
+
+    private void startCleanupTask() {
+        cleanupTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                long now = System.currentTimeMillis();
+                chunkLoadTimes.entrySet().removeIf(entry -> now - entry.getValue() > STALE_ENTRY_MILLIS);
+            }
+        }.runTaskTimerAsynchronously(plugin, CLEANUP_INTERVAL_TICKS, CLEANUP_INTERVAL_TICKS);
     }
 
     private void initializePaperAPIs() {
@@ -125,12 +148,12 @@ public class PaperChunkSystem {
                 // construction for whoever eventually does.)
                 CompletableFuture<Chunk> result = new CompletableFuture<>();
                 future.whenComplete((chunk, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    priorityChunks.remove(key);
                     if (error != null) {
                         result.completeExceptionally(error);
                         return;
                     }
                     chunkLoadTimes.put(key, System.currentTimeMillis());
-                    priorityChunks.remove(key);
                     Logger.debug("Urgently loaded chunk: " + key);
                     result.complete(chunk);
                 }));
@@ -138,6 +161,10 @@ public class PaperChunkSystem {
 
             } catch (Exception e) {
                 Logger.warning("Error with urgent chunk loading: " + e.getMessage());
+                // The reflective invoke failed before any future existed to
+                // remove this key on completion - without this, every chunk
+                // that hits this path leaks its key in priorityChunks forever.
+                priorityChunks.remove(key);
             }
         }
 
@@ -361,6 +388,10 @@ public class PaperChunkSystem {
     }
 
     public void shutdown() {
+        if (cleanupTask != null) {
+            cleanupTask.cancel();
+            cleanupTask = null;
+        }
         clearAllTickets();
         chunkLoadTimes.clear();
         priorityChunks.clear();

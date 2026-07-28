@@ -8,6 +8,7 @@ import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.LinkedList;
 import java.util.Queue;
@@ -23,6 +24,14 @@ public class ChunkPreloader {
     private int preloadedChunksCount;
     private final Queue<ChunkLocation> preloadQueue;
     private static Boolean supportsAsync = null; // Cache async support check
+
+    // The in-progress preload sweep, if any. Without tracking this, shutdown()/
+    // restart() (called on every /uo reload) had no way to stop a preload pass
+    // that was still mid-flight: the runnable only ever cancelled itself once
+    // it finished walking every world, so reloading while spawn chunks were
+    // still loading left the old sweep running forever alongside the new one
+    // start() schedules, each reload stacking another duplicate pass.
+    private BukkitTask preloadTask;
 
     public ChunkPreloader(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -84,6 +93,10 @@ public class ChunkPreloader {
     }
 
     public void shutdown() {
+        if (preloadTask != null) {
+            preloadTask.cancel();
+            preloadTask = null;
+        }
         isPreloading = false;
         preloadQueue.clear();
         Logger.info("ChunkPreloader shut down");
@@ -109,7 +122,7 @@ public class ChunkPreloader {
 
         Logger.info("Starting spawn chunk preloading...");
 
-        new BukkitRunnable() {
+        preloadTask = new BukkitRunnable() {
             int worldIndex = 0;
             int currentChunkIndex = 0;
             int totalChunks = 0;
@@ -127,6 +140,7 @@ public class ChunkPreloader {
                     if (worldIndex >= worlds.length) {
                         finishPreloading();
                         this.cancel();
+                        preloadTask = null;
                         return;
                     }
 
@@ -180,6 +194,7 @@ public class ChunkPreloader {
                     Logger.severe("Error during chunk preloading: " + e.getMessage());
                     e.printStackTrace();
                     this.cancel();
+                    preloadTask = null;
                     isPreloading = false;
                 }
             }
