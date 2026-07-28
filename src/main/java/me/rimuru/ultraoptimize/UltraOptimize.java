@@ -206,12 +206,18 @@ public class UltraOptimize extends JavaPlugin {
             chunkPreloader.restart();
             entityAIManager.restart();
 
-            // Restart Paper managers if enabled
-            if (paperManager != null && paperManager.isPaperDetected() && configManager.isPaperEnabled()) {
+            // Always tear down Paper managers first so toggling paper.enabled
+            // to false and reloading actually stops them - only gating the
+            // re-init on isPaperEnabled() left the old listener/tasks running
+            // forever whenever the feature was disabled via reload instead of
+            // a full server restart.
+            if (paperManager != null && paperManager.isPaperDetected()) {
                 Logger.info("Restarting Paper optimization systems...");
                 paperManager.shutdown();
-                paperManager.initialize();
-                paperManager.start();
+                if (configManager.isPaperEnabled()) {
+                    paperManager.initialize();
+                    paperManager.start();
+                }
             }
 
             Logger.info("Configuration reloaded successfully!");

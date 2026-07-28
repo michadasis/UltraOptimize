@@ -171,26 +171,24 @@ public class StatisticsManager {
                 plugin.getDataFolder().mkdirs();
             }
 
-            FileWriter writer = new FileWriter(statsFile, true);
+            try (FileWriter writer = new FileWriter(statsFile, true)) {
+                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
-            writer.write("\n=================================\n");
-            writer.write("Session End: " + sdf.format(new Date()) + "\n");
-            writer.write("=================================\n");
-            writer.write("Session Uptime: " + formatUptime(getUptime()) + "\n");
-            writer.write("Lifetime Uptime: " + formatUptime(getLifetimeUptime()) + "\n");
-            writer.write("Average TPS: " + String.format("%.2f", plugin.getPerformanceMonitor().getAverageTPS()) + "\n");
-            writer.write("Total Entities: " + plugin.getEntityManager().getTotalEntities() + "\n");
-            writer.write("Loaded Chunks: " + getTotalChunks() + "\n");
-            writer.write("Total Optimizations: " + getTotalOptimizations() + "\n");
-            writer.write("Entities Removed: " + getEntitiesRemoved() + "\n");
-            writer.write("Items Merged: " + getItemsMerged() + "\n");
-            writer.write("Chunks Unloaded: " + getChunksUnloaded() + "\n");
-            writer.write("Chunks Preloaded: " + getChunksPreloaded() + "\n");
-            writer.write("\n");
-
-            writer.close();
+                writer.write("\n=================================\n");
+                writer.write("Session End: " + sdf.format(new Date()) + "\n");
+                writer.write("=================================\n");
+                writer.write("Session Uptime: " + formatUptime(getUptime()) + "\n");
+                writer.write("Lifetime Uptime: " + formatUptime(getLifetimeUptime()) + "\n");
+                writer.write("Average TPS: " + String.format("%.2f", plugin.getPerformanceMonitor().getAverageTPS()) + "\n");
+                writer.write("Total Entities: " + plugin.getEntityManager().getTotalEntities() + "\n");
+                writer.write("Loaded Chunks: " + getTotalChunks() + "\n");
+                writer.write("Total Optimizations: " + getTotalOptimizations() + "\n");
+                writer.write("Entities Removed: " + getEntitiesRemoved() + "\n");
+                writer.write("Items Merged: " + getItemsMerged() + "\n");
+                writer.write("Chunks Unloaded: " + getChunksUnloaded() + "\n");
+                writer.write("Chunks Preloaded: " + getChunksPreloaded() + "\n");
+                writer.write("\n");
+            }
 
             persistLifetimeStatistics();
 

@@ -143,18 +143,22 @@ public class PaperOptimizationManager {
         try {
             if (watchdogMonitor != null) {
                 watchdogMonitor.shutdown();
+                watchdogMonitor = null;
             }
 
             if (regionOptimizer != null) {
                 regionOptimizer.shutdown();
+                regionOptimizer = null;
             }
 
             if (chunkLoader != null) {
                 chunkLoader.shutdown();
+                chunkLoader = null;
             }
 
             if (chunkSystem != null) {
                 chunkSystem.shutdown();
+                chunkSystem = null;
             }
 
             Logger.info("Paper optimization systems stopped");
@@ -185,6 +189,20 @@ public class PaperOptimizationManager {
         try {
             Logger.info("Starting Paper optimization...");
 
+            // Flush region cache (saves all worlds) BEFORE rewriting any
+            // region files below. Defragmentation/empty-region removal edit
+            // .mca files directly on disk with raw file I/O; running that
+            // against a world with unsaved dirty chunks means those chunks'
+            // data isn't reflected on disk yet, and the eventual save could
+            // land on offsets that no longer match what we just rewrote.
+            // Flushing first at least ensures the file we operate on
+            // reflects the latest state, narrowing (not eliminating) that
+            // window - there's no public API to fully invalidate a world's
+            // in-memory region-file cache once it's been rewritten.
+            if (regionOptimizer != null) {
+                regionOptimizer.flushRegionCache();
+            }
+
             // Region file optimization
             if (regionOptimizer != null && plugin.getConfigManager().isPaperRegionFilesEnabled()) {
                 for (World world : Bukkit.getWorlds()) {
@@ -200,11 +218,6 @@ public class PaperOptimizationManager {
                 for (World world : Bukkit.getWorlds()) {
                     result.emptyRegionsRemoved += regionOptimizer.removeEmptyRegions(world);
                 }
-            }
-
-            // Flush region cache
-            if (regionOptimizer != null) {
-                regionOptimizer.flushRegionCache();
             }
 
             // Clear unused chunk tickets

@@ -120,6 +120,17 @@ public class WatchdogMonitor {
         // Get tick duration from Paper if available
         long tickDuration = getTickDuration();
 
+        // Without Paper's Watchdog class, getTickDuration() can only ever
+        // return <=1000ms (derived from 1000/tps) or the hard-coded 20000ms
+        // near-death case, so any threshold between those - including the
+        // default 10s hang-threshold - could never be reached. The gap
+        // between these checks (scheduled every 5s on the main thread) is a
+        // direct, API-independent measurement of how long the main thread
+        // was actually blocked, so fall back to it in that case.
+        if (!paperWatchdogSupported) {
+            tickDuration = Math.max(tickDuration, timeSinceLastTick);
+        }
+
         // Only process if actually hanging
         if (tickDuration > hangThreshold) {
             handleHang(tickDuration);
@@ -294,8 +305,14 @@ public class WatchdogMonitor {
     private void performEmergencyOptimization() {
         Logger.warning("Emergency optimization starting...");
 
-        // Run async to avoid blocking
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        // Everything below touches live Bukkit entities/chunks, which must
+        // happen on the main thread. This used to run optimizeWorld() (world
+        // .getEntities()/entity.remove()) inside runTaskAsynchronously(),
+        // off-thread - Paper's async-access checks reject that outright, and
+        // plain Spigot has no protection against it corrupting state at all.
+        // Entity/chunk cleanup here is cheap, so there's no need to offload
+        // any of it to a background thread.
+        Bukkit.getScheduler().runTask(plugin, () -> {
             try {
                 int removed = 0;
 
@@ -306,27 +323,19 @@ public class WatchdogMonitor {
 
                 Logger.warning("Emergency: Removed " + removed + " entities");
 
-                // Sync operations on main thread
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    try {
-                        // Unload chunks
-                        int unloaded = plugin.getChunkManager().unloadEmptyChunks();
-                        Logger.warning("Emergency: Unloaded " + unloaded + " chunks");
+                // Unload chunks
+                int unloaded = plugin.getChunkManager().unloadEmptyChunks();
+                Logger.warning("Emergency: Unloaded " + unloaded + " chunks");
 
-                        // GC
-                        System.gc();
-                        Logger.warning("Emergency: Forced GC");
-
-                    } catch (Exception e) {
-                        Logger.severe("Emergency optimization failed: " + e.getMessage());
-                    }
-                });
+                // GC
+                System.gc();
+                Logger.warning("Emergency: Forced GC");
 
                 // Reset hang count
                 hangCount = 0;
 
             } catch (Exception e) {
-                Logger.severe("Emergency async failed: " + e.getMessage());
+                Logger.severe("Emergency optimization failed: " + e.getMessage());
             }
         });
     }
