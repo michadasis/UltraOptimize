@@ -3,8 +3,10 @@ package me.rimuru.ultraoptimize.listeners;
 import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.config.ConfigManager;
 import me.rimuru.ultraoptimize.utils.Logger;
+import org.bukkit.Chunk;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -57,13 +59,23 @@ public class EntityListener implements Listener {
             // full Bukkit.getWorlds()/world.getEntities() scan, so running it
             // per-event turned every item drop into a server-wide entity scan.
 
-            // Auto-merge items if enabled
+            // Auto-merge items if enabled. A farm, hopper, or explosion can
+            // fire this event dozens of times in the same chunk within one
+            // tick - claim a per-chunk slot so a burst of drops schedules one
+            // merge sweep instead of one delayed task (each doing its own
+            // getNearbyEntities() scan) per item.
             if (config.isAutoMergeItems()) {
-                plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                    if (!event.getEntity().isDead()) {
-                        plugin.getEntityManager().mergeNearbyItems(event.getEntity());
-                    }
-                }, 20L); // Delay by 1 second to allow items to settle
+                Item item = event.getEntity();
+                Chunk chunk = item.getLocation().getChunk();
+
+                if (plugin.getEntityManager().claimChunkMergeSlot(chunk)) {
+                    plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                        plugin.getEntityManager().releaseChunkMergeSlot(chunk);
+                        if (!item.isDead()) {
+                            plugin.getEntityManager().mergeNearbyItems(item);
+                        }
+                    }, 20L); // Delay by 1 second to allow items to settle
+                }
             }
 
         } catch (Exception e) {

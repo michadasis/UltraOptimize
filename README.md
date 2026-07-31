@@ -18,7 +18,7 @@ When running on a Paper server, UltraOptimize enables the following additional s
 
 * An advanced chunk system using plugin chunk tickets and urgent chunk loading.
 * A watchdog monitor that detects server hangs and can trigger an emergency mode.
-* Region file optimization that defragments region files through sector level compaction (chunk data itself is never touched) and removes empty region files.
+* Region file optimization that removes empty region files.
 * Incremental saving to reduce lag caused by world saves.
 
 ### Entity Optimization
@@ -152,7 +152,6 @@ advanced:
 * `/uo paper watchdog status`: shows the watchdog monitor's status.
 * `/uo paper watchdog reset`: resets the hang counter.
 * `/uo paper regions stats`: shows region file statistics.
-* `/uo paper regions optimize [world]`: optimizes region files.
 * `/uo paper regions clean [world]`: removes empty region files.
 
 ## Permissions
@@ -286,12 +285,6 @@ advanced:
 * Run `/uo info` and check the View Distance Control line for the reason given.
 * If it says the server needs to be Paper, plain Spigot has no API for changing view distance at runtime, at any Minecraft version. Switch to Paper or a Paper based fork such as Purpur to use this feature.
 * If Paper is already confirmed with `/version`, check the console at startup for the exact reason logged by the plugin.
-
-### Before Enabling auto-defragment
-
-* This setting rewrites region (`.mca`) files on disk by compacting chunk sectors.
-* Take a world backup first, as with any tool that rewrites world files.
-* Only whole 4096 byte sectors are moved; chunk data itself is never parsed or modified.
 
 ## Monitoring
 

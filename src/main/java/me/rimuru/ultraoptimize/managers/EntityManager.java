@@ -28,6 +28,12 @@ public class EntityManager {
 
     private final Map<EntityType, Integer> entityCounts;
     private final Map<Location, Long> lastMergeTime;
+    // Chunks with an item-merge sweep already scheduled. A hopper, farm, or
+    // explosion can drop dozens of items in the same chunk within a single
+    // tick; without this, ItemSpawnEvent (see EntityListener) would schedule
+    // one delayed merge task - each doing its own getNearbyEntities() scan -
+    // per item instead of one task per chunk per burst.
+    private final Set<String> pendingChunkMerges;
 
     private BukkitTask cleanupTask;
     private BukkitTask entityCountTask;
@@ -37,6 +43,7 @@ public class EntityManager {
         this.config = plugin.getConfigManager();
         this.entityCounts = new ConcurrentHashMap<>();
         this.lastMergeTime = new ConcurrentHashMap<>();
+        this.pendingChunkMerges = ConcurrentHashMap.newKeySet();
     }
 
     /**
@@ -69,6 +76,7 @@ public class EntityManager {
         if (entityCountTask != null) {
             entityCountTask.cancel();
         }
+        pendingChunkMerges.clear();
     }
 
     public int optimizeWorld(World world) {
@@ -209,6 +217,23 @@ public class EntityManager {
             plugin.getStatisticsManager().incrementItemsMerged(merged);
         }
         return merged;
+    }
+
+    /**
+     * Attempts to reserve a merge sweep for the given chunk. Returns true if
+     * this call claimed the slot (no sweep was already pending for it), false
+     * if one is already scheduled and the caller should skip scheduling its own.
+     */
+    public boolean claimChunkMergeSlot(Chunk chunk) {
+        return pendingChunkMerges.add(getChunkKey(chunk));
+    }
+
+    public void releaseChunkMergeSlot(Chunk chunk) {
+        pendingChunkMerges.remove(getChunkKey(chunk));
+    }
+
+    private String getChunkKey(Chunk chunk) {
+        return chunk.getWorld().getName() + "_" + chunk.getX() + "_" + chunk.getZ();
     }
 
     public void mergeNearbyItems(Item item) {

@@ -11,8 +11,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -34,21 +32,16 @@ public class RegionFileOptimizer {
     // Paper API methods
     private Method saveIncrementallyMethod;
     private boolean paperRegionSupported;
-    private boolean defragRiskWarned;
 
     // Configuration - loaded from config instead of hardcoded
     private boolean incrementalSaving;
     private int saveInterval; // in seconds
     private int cacheCleanupInterval; // in seconds
     private long regionCacheTimeout;
-    private boolean autoDefragment;
     private boolean autoRemoveEmptyRegions;
 
     // Statistics
     private int totalRegions;
-    private int optimizedRegions;
-    private long bytesFreed;
-    private long lastOptimizationTime;
 
     public RegionFileOptimizer(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -69,7 +62,6 @@ public class RegionFileOptimizer {
         this.saveInterval = plugin.getConfigManager().getPaperSaveInterval();
         this.cacheCleanupInterval = plugin.getConfigManager().getPaperCacheCleanupInterval();
         this.regionCacheTimeout = plugin.getConfigManager().getPaperCacheTimeout();
-        this.autoDefragment = plugin.getConfigManager().isPaperAutoDefragment();
         this.autoRemoveEmptyRegions = plugin.getConfigManager().isPaperRemoveEmptyRegions();
 
         Logger.info("Region file optimizer configuration loaded:");
@@ -77,7 +69,6 @@ public class RegionFileOptimizer {
         Logger.info("  Save interval: " + saveInterval + "s");
         Logger.info("  Cache cleanup interval: " + cacheCleanupInterval + "s");
         Logger.info("  Cache timeout: " + (regionCacheTimeout / 1000) + "s");
-        Logger.info("  Auto defragment: " + (autoDefragment ? "ENABLED" : "DISABLED"));
         Logger.info("  Auto remove empty: " + (autoRemoveEmptyRegions ? "ENABLED" : "DISABLED"));
     }
 
@@ -161,8 +152,6 @@ public class RegionFileOptimizer {
     }
 
     private void performIncrementalSave() {
-        lastOptimizationTime = System.currentTimeMillis();
-
         try {
             for (World world : Bukkit.getWorlds()) {
                 if (paperRegionSupported && saveIncrementallyMethod != null) {
@@ -261,183 +250,6 @@ public class RegionFileOptimizer {
     }
 
     /**
-     * Optimize region files by removing unused space
-     */
-    public OptimizationResult optimizeRegionFiles(World world) {
-        OptimizationResult result = new OptimizationResult();
-        result.startTime = System.currentTimeMillis();
-
-        File regionDir = getRegionDirectory(world);
-        if (regionDir == null || !regionDir.exists()) {
-            result.error = "Region directory not found";
-            return result;
-        }
-
-        Logger.info("Optimizing region files for " + world.getName() + "...");
-
-        if (autoDefragment && !defragRiskWarned) {
-            Logger.warning("Defragmentation rewrites .mca files on disk while " + world.getName() +
-                    " is still loaded. There is no public API to invalidate the server's own " +
-                    "in-memory region-file cache afterward, so a chunk save that lands mid-operation " +
-                    "could still write to now-stale offsets. flushRegionCache() runs first to narrow " +
-                    "this window, but it is not eliminated - disable paper.region-files.auto-defragment " +
-                    "if this risk is a concern for this server.");
-            defragRiskWarned = true;
-        }
-
-        File[] files = regionDir.listFiles((dir, name) -> name.endsWith(".mca"));
-        if (files == null) {
-            result.error = "No region files found";
-            return result;
-        }
-
-        for (File file : files) {
-            try {
-                long sizeBefore = file.length();
-
-                if (autoDefragment) {
-                    defragmentRegionFile(file);
-                }
-
-                long sizeAfter = file.length();
-                long saved = sizeBefore - sizeAfter;
-
-                if (saved > 0) {
-                    result.filesOptimized++;
-                    result.bytesFreed += saved;
-                    bytesFreed += saved;
-                    optimizedRegions++;
-                }
-
-                result.filesProcessed++;
-
-            } catch (Exception e) {
-                Logger.warning("Error optimizing " + file.getName() + ": " + e.getMessage());
-                result.errors++;
-            }
-        }
-
-        result.endTime = System.currentTimeMillis();
-        result.duration = result.endTime - result.startTime;
-
-        Logger.info("Region optimization complete: " + result.filesOptimized + " files optimized, " +
-                formatBytes(result.bytesFreed) + " freed in " + result.duration + "ms");
-
-        return result;
-    }
-
-    /**
-     * Defragment a region file by compacting chunk sectors.
-     *
-     * This works purely at the Anvil container level: it never inspects or
-     * modifies chunk NBT/compressed payload bytes, only relocates whole
-     * 4096-byte sectors to remove the gaps left by deleted/relocated chunks
-     * and rewrites the two 4KB header tables to point at the new locations.
-     * That makes it safe across Minecraft versions without needing to
-     * understand chunk data itself.
-     */
-    private void defragmentRegionFile(File file) throws IOException {
-        // Only defragment if file is larger than 1MB
-        if (file.length() < 1024 * 1024) {
-            return;
-        }
-
-        File tempFile = new File(file.getParentFile(), file.getName() + ".defrag.tmp");
-        boolean completed = false;
-
-        try {
-            try (RandomAccessFile source = new RandomAccessFile(file, "r")) {
-                long fileLength = source.length();
-                if (fileLength < 8192) {
-                    return; // not a complete region file
-                }
-
-                byte[] locationTable = new byte[4096];
-                byte[] timestampTable = new byte[4096];
-                source.seek(0);
-                source.readFully(locationTable);
-                source.readFully(timestampTable);
-
-                int[] sectorOffset = new int[1024];
-                int[] sectorCount = new int[1024];
-                int usedSectors = 0;
-
-                for (int i = 0; i < 1024; i++) {
-                    int offset = ((locationTable[i * 4] & 0xFF) << 16) |
-                            ((locationTable[i * 4 + 1] & 0xFF) << 8) |
-                            (locationTable[i * 4 + 2] & 0xFF);
-                    int count = locationTable[i * 4 + 3] & 0xFF;
-
-                    if (offset == 0 || count == 0) continue;
-
-                    long byteOffset = (long) offset * 4096L;
-                    long byteLength = (long) count * 4096L;
-
-                    // Sanity check: entries must land inside the file and
-                    // never inside the 8KB header. If not, the file is
-                    // corrupt/mid-write - leave it untouched.
-                    if (offset < 2 || byteOffset + byteLength > fileLength) {
-                        Logger.warning("Skipping defragmentation of " + file.getName() +
-                                " - invalid chunk sector table entry");
-                        return;
-                    }
-
-                    sectorOffset[i] = offset;
-                    sectorCount[i] = count;
-                    usedSectors += count;
-                }
-
-                if (usedSectors == 0) {
-                    return; // no chunks to compact
-                }
-
-                long newLength = 8192L + (long) usedSectors * 4096L;
-                if (newLength >= fileLength) {
-                    return; // already compact, nothing to gain
-                }
-
-                try (RandomAccessFile dest = new RandomAccessFile(tempFile, "rw")) {
-                    dest.setLength(newLength);
-
-                    byte[] newLocationTable = new byte[4096];
-                    int cursorSector = 2; // sectors 0-1 are the 8KB header
-
-                    for (int i = 0; i < 1024; i++) {
-                        if (sectorCount[i] == 0) continue;
-
-                        byte[] buffer = new byte[sectorCount[i] * 4096];
-                        source.seek((long) sectorOffset[i] * 4096L);
-                        source.readFully(buffer);
-
-                        dest.seek((long) cursorSector * 4096L);
-                        dest.write(buffer);
-
-                        newLocationTable[i * 4] = (byte) ((cursorSector >> 16) & 0xFF);
-                        newLocationTable[i * 4 + 1] = (byte) ((cursorSector >> 8) & 0xFF);
-                        newLocationTable[i * 4 + 2] = (byte) (cursorSector & 0xFF);
-                        newLocationTable[i * 4 + 3] = (byte) (sectorCount[i] & 0xFF);
-
-                        cursorSector += sectorCount[i];
-                    }
-
-                    dest.seek(0);
-                    dest.write(newLocationTable);
-                    dest.write(timestampTable);
-                }
-            }
-
-            // Atomically swap the compacted copy in place of the original
-            Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            completed = true;
-
-        } finally {
-            if (!completed && tempFile.exists()) {
-                tempFile.delete();
-            }
-        }
-    }
-
-    /**
      * Find and remove empty region files
      */
     public int removeEmptyRegions(World world) {
@@ -520,11 +332,8 @@ public class RegionFileOptimizer {
         RegionStats stats = new RegionStats();
         stats.totalRegions = totalRegions;
         stats.totalSize = totalRegionSize.get();
-        stats.optimizedRegions = optimizedRegions;
-        stats.bytesFreed = bytesFreed;
         stats.paperSupported = paperRegionSupported;
         stats.incrementalSaving = incrementalSaving;
-        stats.lastOptimization = lastOptimizationTime;
 
         // Calculate per-world stats
         for (RegionFileInfo info : regionFiles.values()) {
@@ -564,10 +373,6 @@ public class RegionFileOptimizer {
         this.saveInterval = seconds;
     }
 
-    public void setAutoDefragment(boolean enabled) {
-        this.autoDefragment = enabled;
-    }
-
     public void setCacheCleanupInterval(int seconds) {
         this.cacheCleanupInterval = seconds;
     }
@@ -581,25 +386,11 @@ public class RegionFileOptimizer {
         long lastModified;
     }
 
-    public static class OptimizationResult {
-        public long startTime;
-        public long endTime;
-        public long duration;
-        public int filesProcessed;
-        public int filesOptimized;
-        public long bytesFreed;
-        public int errors;
-        public String error;
-    }
-
     public static class RegionStats {
         public int totalRegions;
         public long totalSize;
-        public int optimizedRegions;
-        public long bytesFreed;
         public boolean paperSupported;
         public boolean incrementalSaving;
-        public long lastOptimization;
         public Map<String, Long> sizeByWorld = new HashMap<>();
         public Map<String, Integer> countByWorld = new HashMap<>();
     }

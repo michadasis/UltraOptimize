@@ -98,7 +98,6 @@ public class ConfigManager {
     private int paperSaveInterval;
     private int paperCacheCleanupInterval;
     private long paperCacheTimeout;
-    private boolean paperAutoDefragment;
     private boolean paperRemoveEmptyRegions;
 
     public ConfigManager(UltraOptimize plugin) {
@@ -214,7 +213,6 @@ public class ConfigManager {
         config.addDefault("paper.region-files.save-interval", 30);
         config.addDefault("paper.region-files.cache-cleanup-interval", 60);
         config.addDefault("paper.region-files.cache-timeout", 300000);
-        config.addDefault("paper.region-files.auto-defragment", false);
         config.addDefault("paper.region-files.remove-empty-regions", false);
 
         config.options().copyDefaults(true);
@@ -306,7 +304,6 @@ public class ConfigManager {
         paperSaveInterval = config.getInt("paper.region-files.save-interval", 30);
         paperCacheCleanupInterval = config.getInt("paper.region-files.cache-cleanup-interval", 60);
         paperCacheTimeout = config.getLong("paper.region-files.cache-timeout", 300000);
-        paperAutoDefragment = config.getBoolean("paper.region-files.auto-defragment", false);
         paperRemoveEmptyRegions = config.getBoolean("paper.region-files.remove-empty-regions", false);
     }
 
@@ -533,7 +530,6 @@ public class ConfigManager {
     public int getPaperSaveInterval() { return paperSaveInterval; }
     public int getPaperCacheCleanupInterval() { return paperCacheCleanupInterval; }
     public long getPaperCacheTimeout() { return paperCacheTimeout; }
-    public boolean isPaperAutoDefragment() { return paperAutoDefragment; }
     public boolean isPaperRemoveEmptyRegions() { return paperRemoveEmptyRegions; }
 
     public FileConfiguration getConfig() {

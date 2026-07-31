@@ -14,6 +14,14 @@ import java.util.List;
 
 public class PerformanceMonitor {
 
+    // adjustViewDistance() changes a world's loaded radius, which forces a
+    // burst of chunk loads/unloads around every player. tick() runs every
+    // single tick (20x/sec); without a cooldown, a server whose TPS hovers
+    // right around the adjustment thresholds would flap the view distance up
+    // and down every tick, turning "help a struggling server" into a
+    // constant chunk load/unload churn that makes it worse.
+    private static final long VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS = 3000L;
+
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
@@ -21,6 +29,7 @@ public class PerformanceMonitor {
     private int tickIndex;
     private long lastTick;
     private final List<Double> tpsHistory;
+    private long lastViewDistanceAdjustTime;
 
     private BukkitTask monitorTask;
 
@@ -94,7 +103,9 @@ public class PerformanceMonitor {
         }
 
         // Auto view distance adjustment (master switch + sub-toggle, only if supported)
-        if (config.isOptimizeViewDistance() && config.isAutoViewDistance() && viewDistanceSupported) {
+        if (config.isOptimizeViewDistance() && config.isAutoViewDistance() && viewDistanceSupported
+                && now - lastViewDistanceAdjustTime >= VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS) {
+            lastViewDistanceAdjustTime = now;
             adjustViewDistance(tps);
         }
     }
