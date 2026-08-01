@@ -174,11 +174,6 @@ paper:
     cache-cleanup-interval: 60
     # Cache timeout in milliseconds (5 minutes)
     cache-timeout: 300000
-    # Compact region files by removing sector gaps left by deleted/relocated
-    # chunks (only rearranges whole 4096-byte sectors, never touches chunk
-    # data itself). Off by default since it rewrites world files on disk -
-    # take a backup before enabling on an existing world.
-    auto-defragment: false
     # Auto-remove empty region files
     remove-empty-regions: false
 
@@ -229,8 +224,6 @@ worlds:
 # REGION FILE OPTIMIZATION:
 # - Incremental saving reduces lag during world saves
 # - Cache cleanup prevents memory leaks
-# - Auto-defragment compacts chunk sectors on disk; take a world backup
-#   before enabling it on an existing world
 # - Empty region removal frees disk space
 #
 # HOPPER & AI OPTIMIZATION:

@@ -189,28 +189,14 @@ public class PaperOptimizationManager {
         try {
             Logger.info("Starting Paper optimization...");
 
-            // Flush region cache (saves all worlds) BEFORE rewriting any
-            // region files below. Defragmentation/empty-region removal edit
-            // .mca files directly on disk with raw file I/O; running that
-            // against a world with unsaved dirty chunks means those chunks'
-            // data isn't reflected on disk yet, and the eventual save could
-            // land on offsets that no longer match what we just rewrote.
-            // Flushing first at least ensures the file we operate on
-            // reflects the latest state, narrowing (not eliminating) that
-            // window - there's no public API to fully invalidate a world's
-            // in-memory region-file cache once it's been rewritten.
+            // Flush region cache (saves all worlds) BEFORE removing any empty
+            // region files below. Empty-region removal deletes .mca files
+            // directly with raw file I/O; running that against a world with
+            // unsaved dirty chunks means those chunks' data isn't reflected
+            // on disk yet. Flushing first ensures the file we check reflects
+            // the latest state.
             if (regionOptimizer != null) {
                 regionOptimizer.flushRegionCache();
-            }
-
-            // Region file optimization
-            if (regionOptimizer != null && plugin.getConfigManager().isPaperRegionFilesEnabled()) {
-                for (World world : Bukkit.getWorlds()) {
-                    RegionFileOptimizer.OptimizationResult regionResult =
-                            regionOptimizer.optimizeRegionFiles(world);
-                    result.regionsOptimized += regionResult.filesOptimized;
-                    result.bytesFreed += regionResult.bytesFreed;
-                }
             }
 
             // Remove empty regions if configured
@@ -231,9 +217,7 @@ public class PaperOptimizationManager {
             result.success = true;
 
             Logger.info("Paper optimization complete:");
-            Logger.info("  Regions optimized: " + result.regionsOptimized);
             Logger.info("  Empty regions removed: " + result.emptyRegionsRemoved);
-            Logger.info("  Bytes freed: " + formatBytes(result.bytesFreed));
             Logger.info("  Duration: " + result.duration + "ms");
 
         } catch (Exception e) {
@@ -294,21 +278,12 @@ public class PaperOptimizationManager {
         return paperDetected;
     }
 
-    private String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.2f KB", bytes / 1024.0);
-        if (bytes < 1024 * 1024 * 1024) return String.format("%.2f MB", bytes / (1024.0 * 1024));
-        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
-    }
-
     // Result and statistics classes
     public static class PaperOptimizationResult {
         public long startTime;
         public long endTime;
         public long duration;
-        public int regionsOptimized;
         public int emptyRegionsRemoved;
-        public long bytesFreed;
         public boolean success;
         public String error;
     }

@@ -531,8 +531,6 @@ public class CommandManager implements CommandExecutor {
             Msg.section(sender, "Region Files");
             Msg.kv(sender, 2, "Total Regions", String.valueOf(stats.regionStats.totalRegions));
             Msg.kv(sender, 2, "Total Size", formatBytes(stats.regionStats.totalSize));
-            Msg.kv(sender, 2, "Optimized", String.valueOf(stats.regionStats.optimizedRegions));
-            Msg.kv(sender, 2, "Bytes Freed", formatBytes(stats.regionStats.bytesFreed));
             Msg.kv(sender, 2, "Incremental Save", Msg.bool(stats.regionStats.incrementalSaving));
 
             if (!stats.regionStats.sizeByWorld.isEmpty()) {
@@ -554,9 +552,7 @@ public class CommandManager implements CommandExecutor {
 
         if (result.success) {
             Msg.success(sender, "Paper optimization complete!");
-            Msg.kv(sender, "Regions Optimized", String.valueOf(result.regionsOptimized));
             Msg.kv(sender, "Empty Regions Removed", String.valueOf(result.emptyRegionsRemoved));
-            Msg.kv(sender, "Bytes Freed", formatBytes(result.bytesFreed));
             Msg.kv(sender, "Duration", result.duration + "ms");
         } else {
             Msg.error(sender, "Optimization failed: §f" + result.error);
@@ -618,7 +614,7 @@ public class CommandManager implements CommandExecutor {
 
     private boolean handleRegions(CommandSender sender, String[] args) {
         if (args.length < 3) {
-            Msg.usage(sender, "/uo paper regions <stats|optimize|clean> [world]");
+            Msg.usage(sender, "/uo paper regions <stats|clean> [world]");
             return true;
         }
 
@@ -636,22 +632,6 @@ public class CommandManager implements CommandExecutor {
                 Msg.header(sender, "Region File Statistics");
                 Msg.kv(sender, "Total Regions", String.valueOf(stats.totalRegions));
                 Msg.kv(sender, "Total Size", formatBytes(stats.totalSize));
-                Msg.kv(sender, "Optimized", String.valueOf(stats.optimizedRegions));
-                Msg.kv(sender, "Bytes Freed (lifetime)", formatBytes(stats.bytesFreed));
-                break;
-
-            case "optimize":
-                World world = getTargetWorld(sender, args, 3);
-                if (world == null) return true;
-
-                Msg.info(sender, "Optimizing region files for §f" + world.getName() + "§f...");
-                RegionFileOptimizer.OptimizationResult result = optimizer.optimizeRegionFiles(world);
-
-                Msg.success(sender, "Region optimization complete!");
-                Msg.kv(sender, "Files Processed", String.valueOf(result.filesProcessed));
-                Msg.kv(sender, "Files Optimized", String.valueOf(result.filesOptimized));
-                Msg.kv(sender, "Bytes Freed", formatBytes(result.bytesFreed));
-                Msg.kv(sender, "Duration", result.duration + "ms");
                 break;
 
             case "clean":
@@ -664,7 +644,7 @@ public class CommandManager implements CommandExecutor {
                 break;
 
             default:
-                Msg.usage(sender, "/uo paper regions <stats|optimize|clean> [world]");
+                Msg.usage(sender, "/uo paper regions <stats|clean> [world]");
                 break;
         }
 
