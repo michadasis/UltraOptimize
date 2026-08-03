@@ -1,7 +1,7 @@
 # ================================
 # UltraOptimize Configuration File
 # ================================
-# Version: 1.0
+# Version: 2.3
 # Supporting MC 1.8.9-26.2+
 # Paper Optimization Features
 # ================================
@@ -55,15 +55,21 @@ chunks:
   max-loaded: 0
   # Radius around players where chunks won't be unloaded
   unload-radius: 8
-  # Enable aggressive chunk unloading
-  aggressive-unload: true
+  # Enable aggressive chunk unloading.
+  # OFF by default: the server already unloads chunks nobody is near, and each
+  # pass here forces a synchronous save of every chunk it unloads. It also
+  # fights chunk-preloading and paper.chunk-system.ticket-spawn-chunks below.
+  aggressive-unload: false
   # Interval in seconds between chunk unload checks
   unload-interval: 300
 
 # Spawn Chunk Preloading Settings
 chunk-preloading:
-  # Enable spawn chunk preloading on server startup
-  enabled: true
+  # Enable spawn chunk preloading on server startup.
+  # OFF by default: loaded chunks are the largest single consumer of heap on a
+  # Minecraft server, and this loads (2*radius+1)^2 of them per world whether
+  # or not anyone is near spawn. On a 1GB heap, leave this off.
+  enabled: false
   # Radius of chunks to preload around spawn point in each world
   # Higher = more chunks loaded but longer startup time
   preload-radius: 5
@@ -79,10 +85,17 @@ chunk-preloading:
 
 # Performance Optimization Settings
 performance:
-  # Optimize redstone mechanics
-  optimize-redstone: true
-  # Optimize hopper performance
-  optimize-hoppers: true
+  # Suppress redstone updates for a block that fires more than 100 times per
+  # second. OFF by default: this does not make redstone cheaper (the block
+  # still ticks, the update just becomes a no-op) and it silently stalls
+  # clocks and jams piston doors once a build crosses the threshold.
+  optimize-redstone: false
+  # Throttle hopper item transfers. OFF by default, and read this first:
+  # vanilla only sets a hopper's 8-tick cooldown when a transfer SUCCEEDS, so
+  # cancelling the transfer means the hopper retries next tick instead of in 8.
+  # A throttled hopper therefore does MORE work than an unthrottled one. Only
+  # worth enabling at rates well above 8, and it will break item sorters.
+  optimize-hoppers: false
   # Maximum hoppers allowed per chunk (logs a warning above this; does not remove hoppers)
   max-hoppers-per-chunk: 10
   # Minimum ticks between item transfers per hopper (vanilla default is 8).
@@ -142,8 +155,11 @@ paper:
   chunk-system:
     # Use chunk tickets to keep important chunks loaded
     use-chunk-tickets: true
-    # Keep spawn chunks loaded with tickets
-    ticket-spawn-chunks: true
+    # Keep spawn chunks loaded with tickets.
+    # OFF by default: these tickets are permanent, so the chunks can never
+    # unload while the plugin is enabled, and they tick. That is a fixed
+    # memory cost of roughly (2*radius+1)^2 chunks per world.
+    ticket-spawn-chunks: false
     # Spawn chunk ticket radius
     spawn-ticket-radius: 3
     # Use urgent chunk loading for high-priority chunks
@@ -159,22 +175,28 @@ paper:
     critical-threshold: 30000
     # Number of hangs before triggering emergency mode
     emergency-trigger-count: 3
-    # Auto-trigger emergency optimization on critical hangs
-    auto-emergency-optimization: true
+    # Auto-trigger emergency optimization on critical hangs.
+    # OFF by default. Emergency optimization is a full entity sweep plus a
+    # chunk unload pass; handing that to a server that is already failing to
+    # keep up usually makes things worse, not better. When enabled it is rate
+    # limited to once every 5 minutes.
+    auto-emergency-optimization: false
 
   # Region File Optimization
   region-files:
-    # Enable region file optimization
+    # Enable region file reporting and cleanup tooling
     enabled: true
-    # Use incremental saving (reduces lag spikes)
-    incremental-saving: true
-    # Incremental save interval in seconds
-    save-interval: 30
-    # Region cache cleanup interval in seconds
-    cache-cleanup-interval: 60
-    # Cache timeout in milliseconds (5 minutes)
-    cache-timeout: 300000
-    # Auto-remove empty region files
+    # Periodically save every world.
+    # OFF by default. There is NO API for an incremental or asynchronous world
+    # save - despite what this option used to be called, enabling it performs a
+    # FULL, SYNCHRONOUS save of every loaded chunk in every world, on the main
+    # thread, on the interval below. On a low-memory host with a shared disk
+    # that is a visible freeze every time it fires.
+    incremental-saving: false
+    # World save interval in seconds (minimum 300)
+    save-interval: 900
+    # Auto-remove empty region files. This DELETES world data - leave it off
+    # unless you have a backup.
     remove-empty-regions: false
 
 # Notification Settings
@@ -200,11 +222,19 @@ worlds:
 # ================================
 # Configuration Notes:
 # ================================
+# RUNNING ON A SMALL HEAP (1-2GB):
+# - The defaults above are chosen for exactly this case. Everything that costs
+#   memory or forces disk I/O on a timer ships disabled.
+# - The biggest wins on a small heap are not in this file: lower view-distance
+#   and simulation-distance in server.properties, and keep entity counts down.
+# - Do not enable chunk-preloading, ticket-spawn-chunks, or
+#   region-files.incremental-saving together. Each one pins memory or stalls
+#   the main thread, and the first two also fight aggressive-unload.
+#
 # SPAWN CHUNK PRELOADING:
 # - Preloads chunks around spawn point on server startup
-# - preload-radius of 5-10 is optimal for most servers
-# - Higher chunks-per-tick = faster preloading but more server load during startup
-# - Enable notify-preloading to get notified when preloading completes
+# - Costs memory for as long as those chunks stay loaded; on a small heap this
+#   is a net loss, which is why it defaults to off
 # - Preloading happens once per server start, not continuously
 #
 # PAPER OPTIMIZATIONS:
@@ -215,16 +245,17 @@ worlds:
 # - Incremental saving reduces lag spikes during world saves
 #
 # WATCHDOG MONITOR:
-# - Detects when server is hanging/freezing
-# - Analyzes hang causes (entities, chunks, redstone, etc.)
-# - Emergency mode triggers aggressive optimization
-# - hang-threshold: normal hang detection (10 seconds default)
-# - critical-threshold: triggers immediate emergency optimization (30 seconds)
+# - Detects when the MAIN THREAD stalls, using a heartbeat watched from a
+#   separate thread. A slow server is not a hung server: at 5 TPS the gap
+#   between ticks is ~200ms, nowhere near the 10s default threshold.
+# - Emergency mode runs one entity sweep and chunk unload pass, rate limited
+#   to once every 5 minutes, and never forces a GC.
+# - It stands down automatically once the server has been healthy for 30s.
 #
 # REGION FILE OPTIMIZATION:
-# - Incremental saving reduces lag during world saves
-# - Cache cleanup prevents memory leaks
-# - Empty region removal frees disk space
+# - "incremental-saving" is a full synchronous world save; see the note above
+# - Region scanning runs off the main thread and is report-only
+# - Empty region removal DELETES world data - back up first
 #
 # HOPPER & AI OPTIMIZATION:
 # - hopper-tick-rate throttles item transfers per hopper (8 = vanilla default)
@@ -242,7 +273,6 @@ worlds:
 # - Enable async-chunks for best performance
 # - Lower TPS threshold = more frequent optimization
 # - Higher entity limits = less aggressive optimization
-# - Preloading reduces initial chunk load lag when players join
-# - Paper optimizations provide 10-30% better performance
-# - Watchdog emergency mode can save the server during critical lag
+# - Measure before and after with a profiler (Spark) rather than trusting any
+#   plugin's own claims, including this one's
 # ================================

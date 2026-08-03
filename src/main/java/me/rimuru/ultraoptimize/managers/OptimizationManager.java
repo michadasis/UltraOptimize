@@ -99,12 +99,11 @@ public class OptimizationManager {
 
             // Perform garbage collection only under genuine memory pressure,
             // and no more than once per MIN_FORCED_GC_INTERVAL_MILLIS.
-            long now = System.currentTimeMillis();
-            if (plugin.getPerformanceMonitor().isMemoryCritical() &&
-                    now - lastForcedGCTime >= MIN_FORCED_GC_INTERVAL_MILLIS) {
-                plugin.getPerformanceMonitor().performGarbageCollection();
-                lastForcedGCTime = now;
-                result.gcPerformed = true;
+            if (plugin.getPerformanceMonitor().isMemoryCritical()) {
+                // requestGarbageCollection enforces its own cooldown, so the
+                // rate limit now lives in one place instead of being
+                // reimplemented (and bypassed) per caller.
+                result.gcPerformed = plugin.getPerformanceMonitor().requestGarbageCollection(false) >= 0;
             }
 
             // Update statistics

@@ -1,7 +1,6 @@
 package me.rimuru.ultraoptimize.utils;
 
 import me.rimuru.ultraoptimize.UltraOptimize;
-import org.bukkit.Bukkit;
 
 public class Logger {
 

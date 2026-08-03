@@ -9,31 +9,49 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
 
 public class PerformanceMonitor {
 
-    // adjustViewDistance() changes a world's loaded radius, which forces a
-    // burst of chunk loads/unloads around every player. tick() runs every
-    // single tick (20x/sec); without a cooldown, a server whose TPS hovers
-    // right around the adjustment thresholds would flap the view distance up
-    // and down every tick, turning "help a struggling server" into a
-    // constant chunk load/unload churn that makes it worse.
-    private static final long VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS = 3000L;
+    // The sampler used to run every tick (20 times a second) to maintain a
+    // 60-entry history that the comments described as "1 minute" but which
+    // actually covered three seconds. Sampling once a second makes the history
+    // mean what it says and removes 19 out of every 20 scheduler wakeups,
+    // boxed Doubles, and O(n) ArrayList.remove(0) shifts.
+    private static final long SAMPLE_INTERVAL_TICKS = 20L;
+    private static final int HISTORY_SIZE = 60; // 60 samples = 1 minute
+
+    // Changing a world's view distance forces a burst of chunk loads and
+    // unloads around every player. With a short cooldown and adjacent
+    // thresholds, a server hovering near the trigger point flaps up and down
+    // indefinitely, turning "help a struggling server" into constant chunk
+    // churn. Widened deadband plus a much longer cooldown.
+    private static final long VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS = 30_000L;
+    private static final double VIEW_DISTANCE_LOWER_TPS = 15.0;
+    private static final double VIEW_DISTANCE_RAISE_TPS = 19.5;
+
+    private static final long FORCED_GC_COOLDOWN_MILLIS = 5 * 60 * 1000L;
 
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
-    private final long[] tickTimes;
-    private int tickIndex;
-    private long lastTick;
-    private final List<Double> tpsHistory;
+    // Fixed-size ring buffers of primitives. The old code appended a boxed
+    // Double to an ArrayList and called remove(0) - an O(n) shift - twenty
+    // times a second, and indexed tickTimes with an int counter that would
+    // wrap negative after roughly three and a half years of uptime and start
+    // throwing ArrayIndexOutOfBoundsException.
+    private final double[] tpsHistory = new double[HISTORY_SIZE];
+    private int historyIndex;
+    private int historyCount;
+
+    private volatile double currentTPS = 20.0;
+    private long lastSampleNanos;
     private long lastViewDistanceAdjustTime;
+    private long lastForcedGCTime;
 
     private BukkitTask monitorTask;
 
-    // Reflection cache for view distance methods (1.14+ only)
+    // Reflection cache
+    private Method serverGetTpsMethod;
     private Method getViewDistanceMethod;
     private Method setViewDistanceMethod;
     private boolean viewDistanceSupported;
@@ -41,18 +59,30 @@ public class PerformanceMonitor {
     public PerformanceMonitor(UltraOptimize plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
-        this.tickTimes = new long[20];
-        this.tickIndex = 0;
-        this.lastTick = System.currentTimeMillis();
-        this.tpsHistory = new ArrayList<>();
+        this.lastSampleNanos = System.nanoTime();
 
-        // Initialize reflection methods for view distance
+        initializeServerTps();
         initializeViewDistanceMethods();
+    }
+
+    /**
+     * Spigot and Paper both expose Server#getTPS(), which reports the server's
+     * own rolling averages. Where it exists it is strictly better than timing
+     * our own scheduled task, which measures scheduler latency as much as tick
+     * rate.
+     */
+    private void initializeServerTps() {
+        try {
+            serverGetTpsMethod = Bukkit.getServer().getClass().getMethod("getTPS");
+            Logger.info("Using the server's own TPS reporting");
+        } catch (NoSuchMethodException e) {
+            serverGetTpsMethod = null;
+            Logger.info("Server#getTPS() unavailable - sampling tick times directly");
+        }
     }
 
     private void initializeViewDistanceMethods() {
         try {
-            // Try to get the view distance methods (available in 1.14+)
             getViewDistanceMethod = World.class.getMethod("getViewDistance");
             setViewDistanceMethod = World.class.getMethod("setViewDistance", int.class);
             viewDistanceSupported = true;
@@ -69,13 +99,13 @@ public class PerformanceMonitor {
             @Override
             public void run() {
                 try {
-                    tick();
+                    sample();
                 } catch (Exception e) {
                     Logger.severe("Error in performance monitor: " + e.getMessage());
                     e.printStackTrace();
                 }
             }
-        }.runTaskTimer(plugin, 0L, 1L);
+        }.runTaskTimer(plugin, SAMPLE_INTERVAL_TICKS, SAMPLE_INTERVAL_TICKS);
 
         Logger.info("PerformanceMonitor started successfully");
     }
@@ -83,95 +113,90 @@ public class PerformanceMonitor {
     public void shutdown() {
         if (monitorTask != null) {
             monitorTask.cancel();
+            monitorTask = null;
         }
         Logger.info("PerformanceMonitor shut down");
     }
 
-    private void tick() {
-        long now = System.currentTimeMillis();
-        long elapsed = now - lastTick;
-        lastTick = now;
+    private void sample() {
+        long now = System.nanoTime();
+        double tps = measureTPS(now);
+        lastSampleNanos = now;
 
-        tickTimes[tickIndex++ % 20] = elapsed;
+        currentTPS = tps;
 
-        double tps = calculateRealTimeTPS();
-        tpsHistory.add(tps);
+        tpsHistory[historyIndex] = tps;
+        historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+        if (historyCount < HISTORY_SIZE) historyCount++;
 
-        // Keep only last 60 TPS readings (1 minute at 1 tick per second)
-        if (tpsHistory.size() > 60) {
-            tpsHistory.remove(0);
-        }
+        long nowMillis = System.currentTimeMillis();
 
-        // Auto view distance adjustment (master switch + sub-toggle, only if supported)
         if (config.isOptimizeViewDistance() && config.isAutoViewDistance() && viewDistanceSupported
-                && now - lastViewDistanceAdjustTime >= VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS) {
-            lastViewDistanceAdjustTime = now;
+                && nowMillis - lastViewDistanceAdjustTime >= VIEW_DISTANCE_ADJUST_COOLDOWN_MILLIS) {
+            lastViewDistanceAdjustTime = nowMillis;
             adjustViewDistance(tps);
         }
     }
 
-    private double calculateRealTimeTPS() {
-        long totalTime = 0;
-        int validTicks = 0;
-
-        for (long time : tickTimes) {
-            if (time > 0) {
-                totalTime += time;
-                validTicks++;
+    private double measureTPS(long nowNanos) {
+        if (serverGetTpsMethod != null) {
+            try {
+                double[] tps = (double[]) serverGetTpsMethod.invoke(Bukkit.getServer());
+                if (tps != null && tps.length > 0 && tps[0] > 0) {
+                    return Math.min(tps[0], 20.0);
+                }
+            } catch (Exception ignored) {
+                // fall through to direct measurement
             }
         }
 
-        if (validTicks == 0 || totalTime == 0) {
-            return 20.0;
-        }
+        // SAMPLE_INTERVAL_TICKS ticks should take exactly
+        // SAMPLE_INTERVAL_TICKS * 50ms; the ratio gives the achieved rate.
+        long elapsedNanos = nowNanos - lastSampleNanos;
+        if (elapsedNanos <= 0) return 20.0;
 
-        double avgTickTime = (double) totalTime / validTicks;
-        double tps = 1000.0 / avgTickTime;
+        double elapsedMillis = elapsedNanos / 1_000_000.0;
+        double tps = (SAMPLE_INTERVAL_TICKS * 1000.0) / elapsedMillis;
 
         return Math.min(tps, 20.0);
     }
 
     public double getCurrentTPS() {
-        return calculateRealTimeTPS();
+        return currentTPS;
     }
 
     public double getAverageTPS() {
-        if (tpsHistory.isEmpty()) {
-            return 20.0;
-        }
+        if (historyCount == 0) return 20.0;
 
-        return tpsHistory.stream()
-                .mapToDouble(Double::doubleValue)
-                .average()
-                .orElse(20.0);
+        double total = 0;
+        for (int i = 0; i < historyCount; i++) {
+            total += tpsHistory[i];
+        }
+        return total / historyCount;
     }
 
     public double getMinTPS() {
-        if (tpsHistory.isEmpty()) {
-            return 20.0;
-        }
+        if (historyCount == 0) return 20.0;
 
-        return tpsHistory.stream()
-                .mapToDouble(Double::doubleValue)
-                .min()
-                .orElse(20.0);
+        double min = Double.MAX_VALUE;
+        for (int i = 0; i < historyCount; i++) {
+            if (tpsHistory[i] < min) min = tpsHistory[i];
+        }
+        return min;
     }
 
     public double getMaxTPS() {
-        if (tpsHistory.isEmpty()) {
-            return 20.0;
-        }
+        if (historyCount == 0) return 20.0;
 
-        return tpsHistory.stream()
-                .mapToDouble(Double::doubleValue)
-                .max()
-                .orElse(20.0);
+        double max = 0;
+        for (int i = 0; i < historyCount; i++) {
+            if (tpsHistory[i] > max) max = tpsHistory[i];
+        }
+        return max;
     }
 
     private void adjustViewDistance(double tps) {
-        if (!viewDistanceSupported) {
-            return;
-        }
+        if (!viewDistanceSupported) return;
 
         int minView = config.getMinViewDistance();
         int maxView = config.getMaxViewDistance();
@@ -181,9 +206,9 @@ public class PerformanceMonitor {
                 int currentView = getWorldViewDistance(world);
                 int newView = currentView;
 
-                if (tps < 15 && currentView > minView) {
+                if (tps < VIEW_DISTANCE_LOWER_TPS && currentView > minView) {
                     newView = Math.max(minView, currentView - 1);
-                } else if (tps > 19 && currentView < maxView) {
+                } else if (tps > VIEW_DISTANCE_RAISE_TPS && currentView < maxView) {
                     newView = Math.min(maxView, currentView + 1);
                 }
 
@@ -205,8 +230,7 @@ public class PerformanceMonitor {
         }
 
         try {
-            Object result = getViewDistanceMethod.invoke(world);
-            return (Integer) result;
+            return (Integer) getViewDistanceMethod.invoke(world);
         } catch (Exception e) {
             return getServerViewDistance();
         }
@@ -229,10 +253,8 @@ public class PerformanceMonitor {
 
     private int getServerViewDistance() {
         try {
-            // Try spigot.yml first (most reliable across versions)
             return Bukkit.getServer().getViewDistance();
         } catch (Exception e) {
-            // Fallback to default
             return 10;
         }
     }
@@ -245,30 +267,54 @@ public class PerformanceMonitor {
         info.totalMemory = runtime.totalMemory() / 1024 / 1024;
         info.maxMemory = runtime.maxMemory() / 1024 / 1024;
         info.freeMemory = runtime.freeMemory() / 1024 / 1024;
-        info.usagePercent = (info.usedMemory * 100.0) / info.maxMemory;
+        info.usagePercent = info.maxMemory > 0 ? (info.usedMemory * 100.0) / info.maxMemory : 0;
 
         return info;
     }
 
     public boolean isMemoryCritical() {
-        MemoryInfo info = getMemoryInfo();
-        return info.usagePercent > 90;
+        return getMemoryInfo().usagePercent > 90;
     }
 
     public boolean isMemoryHigh() {
-        MemoryInfo info = getMemoryInfo();
-        return info.usagePercent > 75;
+        return getMemoryInfo().usagePercent > 75;
     }
 
-    public void performGarbageCollection() {
+    public long getMillisUntilGarbageCollectionAllowed() {
+        long elapsed = System.currentTimeMillis() - lastForcedGCTime;
+        return Math.max(0, FORCED_GC_COOLDOWN_MILLIS - elapsed);
+    }
+
+    /**
+     * Forces a full stop-the-world collection.
+     *
+     * <p>On a 1GB heap this is a visible multi-second freeze, so it is rate
+     * limited unless explicitly forced. Every caller should prefer
+     * {@link #requestGarbageCollection(boolean)} over calling this blindly -
+     * the manual /uo gc command used to bypass the guards that
+     * OptimizationManager correctly applies.
+     *
+     * @return megabytes reclaimed, or -1 if the request was declined
+     */
+    public long requestGarbageCollection(boolean force) {
+        if (!force && getMillisUntilGarbageCollectionAllowed() > 0) {
+            return -1;
+        }
+
         Logger.info("Running garbage collection...");
+        lastForcedGCTime = System.currentTimeMillis();
 
-        long before = Runtime.getRuntime().freeMemory();
+        Runtime runtime = Runtime.getRuntime();
+        long usedBefore = runtime.totalMemory() - runtime.freeMemory();
         System.gc();
-        long after = Runtime.getRuntime().freeMemory();
+        long usedAfter = runtime.totalMemory() - runtime.freeMemory();
 
-        long freed = (after - before) / 1024 / 1024;
-        Logger.info("Freed " + freed + "MB of memory");
+        // Measured on used memory, not free memory: the old calculation broke
+        // whenever the collector also handed pages back and shrank the heap.
+        long freed = (usedBefore - usedAfter) / 1024 / 1024;
+        Logger.info("Reclaimed " + Math.max(0, freed) + "MB of memory");
+
+        return Math.max(0, freed);
     }
 
     public PerformanceReport generateReport() {
@@ -285,7 +331,6 @@ public class PerformanceMonitor {
         report.entitiesPerChunk = report.totalChunks > 0 ?
                 (double) report.totalEntities / report.totalChunks : 0;
 
-        // Performance status
         if (report.currentTPS < 15) {
             report.status = PerformanceStatus.CRITICAL;
         } else if (report.currentTPS < 18) {
@@ -294,7 +339,6 @@ public class PerformanceMonitor {
             report.status = PerformanceStatus.GOOD;
         }
 
-        // Memory status
         if (report.memoryInfo.usagePercent > 90) {
             report.memoryStatus = PerformanceStatus.CRITICAL;
         } else if (report.memoryInfo.usagePercent > 75) {
@@ -318,7 +362,6 @@ public class PerformanceMonitor {
         return viewDistanceSupported;
     }
 
-    // Inner classes
     public static class MemoryInfo {
         public long usedMemory;
         public long totalMemory;

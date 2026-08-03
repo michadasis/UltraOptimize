@@ -52,7 +52,7 @@ public class UltraOptimize extends JavaPlugin {
             paperManager = new PaperOptimizationManager(this);
             paperManager.initialize();
 
-            // Register listeners (FIXED - now includes PlayerMoveListener)
+            // Register listeners
             registerListeners();
 
             // Initialize commands
@@ -159,8 +159,13 @@ public class UltraOptimize extends JavaPlugin {
             getServer().getPluginManager().registerEvents(hopperListener, this);
             hopperListener.start();
 
-            // FIXED: Register PlayerMoveListener for chunk preloading
-            getServer().getPluginManager().registerEvents(new PlayerMoveListener(this), this);
+            // PlayerMoveListener has been removed. It called
+            // ChunkPreloader#onPlayerMove/#queuePreloadForPlayer, both of which
+            // were empty placeholders - but to decide whether to call them it
+            // ran event.getFrom().getChunk() and event.getTo().getChunk() on
+            // every move packet from every player. Location#getChunk() goes
+            // through World#getChunkAt, which loads the chunk if it is not
+            // already loaded. It was pure cost for no behaviour.
 
             Logger.info("Event listeners registered successfully");
         } catch (Exception e) {

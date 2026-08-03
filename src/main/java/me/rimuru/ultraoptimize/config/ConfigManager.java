@@ -96,8 +96,6 @@ public class ConfigManager {
     private boolean paperRegionFilesEnabled;
     private boolean paperIncrementalSaving;
     private int paperSaveInterval;
-    private int paperCacheCleanupInterval;
-    private long paperCacheTimeout;
     private boolean paperRemoveEmptyRegions;
 
     public ConfigManager(UltraOptimize plugin) {
@@ -148,11 +146,11 @@ public class ConfigManager {
         config.addDefault("chunks.force-upgrade", false);
         config.addDefault("chunks.max-loaded", 0);
         config.addDefault("chunks.unload-radius", 8);
-        config.addDefault("chunks.aggressive-unload", true);
+        config.addDefault("chunks.aggressive-unload", false);
         config.addDefault("chunks.unload-interval", 300);
 
         // Chunk preloading
-        config.addDefault("chunk-preloading.enabled", true);
+        config.addDefault("chunk-preloading.enabled", false);
         config.addDefault("chunk-preloading.preload-radius", 5);
         config.addDefault("chunk-preloading.chunks-per-tick", 3);
         config.addDefault("chunk-preloading.spiral-pattern", true);
@@ -160,8 +158,8 @@ public class ConfigManager {
         config.addDefault("chunk-preloading.notify-preloading", true);
 
         // Performance
-        config.addDefault("performance.optimize-redstone", true);
-        config.addDefault("performance.optimize-hoppers", true);
+        config.addDefault("performance.optimize-redstone", false);
+        config.addDefault("performance.optimize-hoppers", false);
         config.addDefault("performance.max-hoppers-per-chunk", 10);
         config.addDefault("performance.hopper-tick-rate", 8);
         config.addDefault("performance.optimize-lighting", true);
@@ -196,7 +194,7 @@ public class ConfigManager {
 
         // Paper chunk system
         config.addDefault("paper.chunk-system.use-chunk-tickets", true);
-        config.addDefault("paper.chunk-system.ticket-spawn-chunks", true);
+        config.addDefault("paper.chunk-system.ticket-spawn-chunks", false);
         config.addDefault("paper.chunk-system.spawn-ticket-radius", 3);
         config.addDefault("paper.chunk-system.use-urgent-loading", true);
 
@@ -205,14 +203,12 @@ public class ConfigManager {
         config.addDefault("paper.watchdog.hang-threshold", 10000);
         config.addDefault("paper.watchdog.critical-threshold", 30000);
         config.addDefault("paper.watchdog.emergency-trigger-count", 3);
-        config.addDefault("paper.watchdog.auto-emergency-optimization", true);
+        config.addDefault("paper.watchdog.auto-emergency-optimization", false);
 
         // Paper region files
         config.addDefault("paper.region-files.enabled", true);
-        config.addDefault("paper.region-files.incremental-saving", true);
-        config.addDefault("paper.region-files.save-interval", 30);
-        config.addDefault("paper.region-files.cache-cleanup-interval", 60);
-        config.addDefault("paper.region-files.cache-timeout", 300000);
+        config.addDefault("paper.region-files.incremental-saving", false);
+        config.addDefault("paper.region-files.save-interval", 900);
         config.addDefault("paper.region-files.remove-empty-regions", false);
 
         config.options().copyDefaults(true);
@@ -239,11 +235,11 @@ public class ConfigManager {
         forceUpgrade = config.getBoolean("chunks.force-upgrade");
         maxLoadedChunks = config.getInt("chunks.max-loaded");
         unloadRadius = config.getInt("chunks.unload-radius");
-        aggressiveUnload = config.getBoolean("chunks.aggressive-unload");
+        aggressiveUnload = config.getBoolean("chunks.aggressive-unload", false);
         unloadInterval = config.getInt("chunks.unload-interval");
 
         // Chunk preloading
-        chunkPreloadingEnabled = config.getBoolean("chunk-preloading.enabled", true);
+        chunkPreloadingEnabled = config.getBoolean("chunk-preloading.enabled", false);
         preloadRadius = config.getInt("chunk-preloading.preload-radius", 5);
         preloadChunksPerTick = config.getInt("chunk-preloading.chunks-per-tick", 3);
         spiralPattern = config.getBoolean("chunk-preloading.spiral-pattern", true);
@@ -251,8 +247,8 @@ public class ConfigManager {
         notifyPreloading = config.getBoolean("chunk-preloading.notify-preloading", true);
 
         // Performance
-        optimizeRedstone = config.getBoolean("performance.optimize-redstone");
-        optimizeHoppers = config.getBoolean("performance.optimize-hoppers");
+        optimizeRedstone = config.getBoolean("performance.optimize-redstone", false);
+        optimizeHoppers = config.getBoolean("performance.optimize-hoppers", false);
         maxHoppersPerChunk = config.getInt("performance.max-hoppers-per-chunk");
         hopperTickRate = config.getInt("performance.hopper-tick-rate");
         optimizeLighting = config.getBoolean("performance.optimize-lighting");
@@ -287,7 +283,7 @@ public class ConfigManager {
 
         // Paper chunk system
         paperUseChunkTickets = config.getBoolean("paper.chunk-system.use-chunk-tickets", true);
-        paperTicketSpawnChunks = config.getBoolean("paper.chunk-system.ticket-spawn-chunks", true);
+        paperTicketSpawnChunks = config.getBoolean("paper.chunk-system.ticket-spawn-chunks", false);
         paperSpawnTicketRadius = config.getInt("paper.chunk-system.spawn-ticket-radius", 3);
         paperUseUrgentLoading = config.getBoolean("paper.chunk-system.use-urgent-loading", true);
 
@@ -296,14 +292,12 @@ public class ConfigManager {
         paperHangThreshold = config.getLong("paper.watchdog.hang-threshold", 10000);
         paperCriticalThreshold = config.getLong("paper.watchdog.critical-threshold", 30000);
         paperEmergencyTriggerCount = config.getInt("paper.watchdog.emergency-trigger-count", 3);
-        paperAutoEmergencyOptimization = config.getBoolean("paper.watchdog.auto-emergency-optimization", true);
+        paperAutoEmergencyOptimization = config.getBoolean("paper.watchdog.auto-emergency-optimization", false);
 
         // Paper region files
         paperRegionFilesEnabled = config.getBoolean("paper.region-files.enabled", true);
-        paperIncrementalSaving = config.getBoolean("paper.region-files.incremental-saving", true);
-        paperSaveInterval = config.getInt("paper.region-files.save-interval", 30);
-        paperCacheCleanupInterval = config.getInt("paper.region-files.cache-cleanup-interval", 60);
-        paperCacheTimeout = config.getLong("paper.region-files.cache-timeout", 300000);
+        paperIncrementalSaving = config.getBoolean("paper.region-files.incremental-saving", false);
+        paperSaveInterval = config.getInt("paper.region-files.save-interval", 900);
         paperRemoveEmptyRegions = config.getBoolean("paper.region-files.remove-empty-regions", false);
     }
 
@@ -404,15 +398,14 @@ public class ConfigManager {
             }
         }
 
-        if (paperRegionFilesEnabled) {
-            if (paperSaveInterval < 10 || paperSaveInterval > 300) {
-                Logger.warning("paper.region-files.save-interval invalid (" + paperSaveInterval + "s), adjusted to 30s");
-                paperSaveInterval = Math.max(10, Math.min(300, paperSaveInterval));
-                hasWarnings = true;
-            }
-            if (paperCacheCleanupInterval < 30 || paperCacheCleanupInterval > 600) {
-                Logger.warning("paper.region-files.cache-cleanup-interval invalid (" + paperCacheCleanupInterval + "s), adjusted to 60s");
-                paperCacheCleanupInterval = Math.max(30, Math.min(600, paperCacheCleanupInterval));
+        if (paperRegionFilesEnabled && paperIncrementalSaving) {
+            // Floor raised from 10s to 300s. This triggers a full synchronous
+            // world save, so a 30s interval - the old default - meant a
+            // main-thread stall twice a minute for the life of the server.
+            if (paperSaveInterval < 300 || paperSaveInterval > 3600) {
+                Logger.warning("paper.region-files.save-interval invalid (" + paperSaveInterval +
+                        "s), adjusted to 900s - this option performs a full synchronous world save");
+                paperSaveInterval = Math.max(300, Math.min(3600, paperSaveInterval));
                 hasWarnings = true;
             }
         }
@@ -528,8 +521,6 @@ public class ConfigManager {
     public boolean isPaperRegionFilesEnabled() { return paperRegionFilesEnabled; }
     public boolean isPaperIncrementalSaving() { return paperIncrementalSaving; }
     public int getPaperSaveInterval() { return paperSaveInterval; }
-    public int getPaperCacheCleanupInterval() { return paperCacheCleanupInterval; }
-    public long getPaperCacheTimeout() { return paperCacheTimeout; }
     public boolean isPaperRemoveEmptyRegions() { return paperRemoveEmptyRegions; }
 
     public FileConfiguration getConfig() {

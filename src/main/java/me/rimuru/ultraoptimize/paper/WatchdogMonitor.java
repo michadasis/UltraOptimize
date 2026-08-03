@@ -7,56 +7,79 @@ import org.bukkit.World;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * CPU-optimized watchdog monitor
- * Lightweight hang detection with minimal overhead
+ * Main-thread hang detection.
+ *
+ * <p>The previous implementation could not work by construction. It scheduled
+ * itself with {@code runTaskTimer(plugin, 100L, 100L)} - 100 <i>ticks</i>, not
+ * five seconds - and then treated the wall-clock gap between its own runs as
+ * the hang duration. On a server at 5 TPS those 100 ticks take twenty seconds,
+ * so a server that was merely <i>slow</i> reported a fresh twenty-second "hang"
+ * on every cycle, tripped emergency mode, and got a full world entity scan plus
+ * a forced System.gc() on top of the load it was already failing to keep up
+ * with - every five seconds, with no cooldown, until it died. It also ran on
+ * the very thread it was trying to observe, so it could never actually see a
+ * hang while one was happening.
+ *
+ * <p>This version keeps a 1-tick heartbeat on the main thread (a single
+ * volatile store) and watches it from a plain daemon thread. Bukkit's async
+ * scheduler is not usable here: async tasks are dispatched from the main tick
+ * loop, so a hung main thread stalls those too.
  */
 public class WatchdogMonitor {
 
+    private static final long HEARTBEAT_INTERVAL_TICKS = 1L;
+    private static final long CHECK_INTERVAL_MILLIS = 1000L;
+
+    // A struggling server must not be handed a full world scan every few
+    // seconds. One emergency pass, then leave it alone long enough to recover.
+    private static final long EMERGENCY_COOLDOWN_MILLIS = 5 * 60 * 1000L;
+
+    // Consecutive healthy checks before emergency mode stands down.
+    private static final int RECOVERY_CHECKS = 30;
+
     private final UltraOptimize plugin;
 
-    private BukkitTask monitorTask;
-    private volatile long lastTickTime;
+    private volatile long lastHeartbeatNanos;
     private volatile boolean emergencyMode;
     private volatile int hangCount;
+    private volatile boolean running;
 
-    // Watchdog configuration - loaded from config
     private long hangThreshold;
     private long criticalHangThreshold;
     private int emergencyTriggerCount;
     private boolean autoEmergencyOptimization;
 
-    // Paper Watchdog API (optional)
-    private Method getTickDurationMethod;
-    private boolean paperWatchdogSupported;
+    private BukkitTask heartbeatTask;
+    private Thread watcherThread;
 
-    // Minimal hang tracking - keep only last 5
     private final LinkedList<HangReport> recentHangs;
     private final Map<String, Integer> hangCauses;
 
-    // Statistics
-    private int totalHangs;
-    private long totalHangTime;
+    private volatile int totalHangs;
+    private volatile long totalHangTime;
+    private volatile long lastEmergencyTime;
+    private int healthyChecks;
 
     public WatchdogMonitor(UltraOptimize plugin) {
         this.plugin = plugin;
         this.recentHangs = new LinkedList<>();
-        this.hangCauses = new HashMap<>();
-        this.lastTickTime = System.currentTimeMillis();
+        this.hangCauses = new ConcurrentHashMap<>();
+        this.lastHeartbeatNanos = System.nanoTime();
         this.emergencyMode = false;
         this.hangCount = 0;
 
-        // Load configuration values
         loadConfiguration();
-
-        initializePaperWatchdog();
     }
 
     private void loadConfiguration() {
-        // Load from config instead of hardcoding
         this.hangThreshold = plugin.getConfigManager().getPaperHangThreshold();
         this.criticalHangThreshold = plugin.getConfigManager().getPaperCriticalThreshold();
         this.emergencyTriggerCount = plugin.getConfigManager().getPaperEmergencyTriggerCount();
@@ -69,151 +92,133 @@ public class WatchdogMonitor {
         Logger.info("  Auto emergency optimization: " + (autoEmergencyOptimization ? "ENABLED" : "DISABLED"));
     }
 
-    private void initializePaperWatchdog() {
-        try {
-            Class<?> watchdogClass = Class.forName("com.destroystokyo.paper.Watchdog");
-            getTickDurationMethod = watchdogClass.getMethod("getTickDuration");
-            paperWatchdogSupported = true;
-            Logger.info("Paper Watchdog: ENABLED");
-        } catch (ClassNotFoundException | NoSuchMethodException e) {
-            paperWatchdogSupported = false;
-            Logger.info("Paper Watchdog: DISABLED (using standard detection)");
-        }
-    }
-
     public void start() {
         if (!plugin.getConfigManager().isPaperWatchdogEnabled()) {
             Logger.info("Watchdog monitor disabled in config");
             return;
         }
 
-        // Check every 5 seconds instead of every second - much lower CPU usage
-        monitorTask = new BukkitRunnable() {
+        lastHeartbeatNanos = System.nanoTime();
+        running = true;
+
+        heartbeatTask = new BukkitRunnable() {
             @Override
             public void run() {
-                checkForHang();
+                lastHeartbeatNanos = System.nanoTime();
             }
-        }.runTaskTimer(plugin, 100L, 100L); // Every 5 seconds
+        }.runTaskTimer(plugin, HEARTBEAT_INTERVAL_TICKS, HEARTBEAT_INTERVAL_TICKS);
 
-        Logger.info("Watchdog monitor started (interval: 5s)");
+        watcherThread = new Thread(this::watchLoop, "UltraOptimize-Watchdog");
+        watcherThread.setDaemon(true);
+        watcherThread.start();
+
+        Logger.info("Watchdog monitor started (heartbeat thread, 1s resolution)");
     }
 
     public void shutdown() {
-        if (monitorTask != null) {
-            monitorTask.cancel();
+        running = false;
+
+        if (heartbeatTask != null) {
+            heartbeatTask.cancel();
+            heartbeatTask = null;
+        }
+
+        if (watcherThread != null) {
+            watcherThread.interrupt();
+            watcherThread = null;
         }
 
         if (emergencyMode) {
-            disableEmergencyMode();
+            emergencyMode = false;
+            Logger.info("Emergency mode deactivated");
         }
 
         Logger.info("Watchdog monitor stopped");
     }
 
-    private void checkForHang() {
-        long currentTime = System.currentTimeMillis();
-        long timeSinceLastTick = currentTime - lastTickTime;
-
-        // Update last tick time
-        lastTickTime = currentTime;
-
-        // Get tick duration from Paper if available
-        long tickDuration = getTickDuration();
-
-        // Without Paper's Watchdog class, getTickDuration() can only ever
-        // return <=1000ms (derived from 1000/tps) or the hard-coded 20000ms
-        // near-death case, so any threshold between those - including the
-        // default 10s hang-threshold - could never be reached. The gap
-        // between these checks (scheduled every 5s on the main thread) is a
-        // direct, API-independent measurement of how long the main thread
-        // was actually blocked, so fall back to it in that case.
-        if (!paperWatchdogSupported) {
-            tickDuration = Math.max(tickDuration, timeSinceLastTick);
-        }
-
-        // Only process if actually hanging
-        if (tickDuration > hangThreshold) {
-            handleHang(tickDuration);
-        } else if (tickDuration < 100 && hangCount > 0) {
-            // Gradually decrease hang count when server is healthy
-            hangCount = Math.max(0, hangCount - 1);
-        }
-
-        // Check for critical hang
-        if (tickDuration > criticalHangThreshold) {
-            handleCriticalHang(tickDuration);
-        }
-    }
-
-    private long getTickDuration() {
-        if (paperWatchdogSupported && getTickDurationMethod != null) {
+    private void watchLoop() {
+        while (running) {
             try {
-                Object watchdog = Class.forName("com.destroystokyo.paper.Watchdog")
-                        .getMethod("getInstance").invoke(null);
-                return (long) getTickDurationMethod.invoke(watchdog);
-            } catch (Exception ignored) {
-                // Fall through to estimate
+                Thread.sleep(CHECK_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
+            if (!running) return;
+
+            try {
+                checkForHang();
+            } catch (Exception e) {
+                Logger.warning("Watchdog check failed: " + e.getMessage());
             }
         }
-
-        // Estimate from TPS
-        double tps = plugin.getPerformanceMonitor().getCurrentTPS();
-        if (tps < 1) return 20000; // Server is severely lagging
-        return (long) (1000.0 / tps);
     }
 
-    private void handleHang(long duration) {
+    private void checkForHang() {
+        long stalledMillis = (System.nanoTime() - lastHeartbeatNanos) / 1_000_000L;
+
+        // This is the time since the main thread last completed a tick. A
+        // healthy server sits at ~50ms; even a server at 5 TPS only reaches
+        // ~200ms. Anything near the threshold really is a stall, not slowness.
+        if (stalledMillis <= hangThreshold) {
+            if (hangCount > 0 && stalledMillis < 1000) {
+                hangCount--;
+            }
+
+            if (emergencyMode && stalledMillis < 1000) {
+                if (++healthyChecks >= RECOVERY_CHECKS) {
+                    disableEmergencyMode();
+                }
+            }
+            return;
+        }
+
+        healthyChecks = 0;
+        handleHang(stalledMillis, stalledMillis > criticalHangThreshold);
+    }
+
+    private void handleHang(long duration, boolean critical) {
         hangCount++;
         totalHangs++;
         totalHangTime += duration;
 
-        // Only log if notify-hangs is enabled
-        if (plugin.getConfigManager().isNotifyHangs()) {
+        if (critical) {
+            Logger.severe("CRITICAL: main thread stalled for " + duration + "ms");
+        } else if (plugin.getConfigManager().isNotifyHangs()) {
             Logger.warning("Server hang detected: " + duration + "ms (count: " + hangCount + ")");
         }
 
-        // Lightweight hang analysis - no heavy stack trace analysis
-        HangReport report = createSimpleReport(duration);
+        boolean shouldTriggerEmergency =
+                (critical || hangCount >= emergencyTriggerCount) && !emergencyMode;
 
-        // Keep only last 5 hangs
-        synchronized (recentHangs) {
-            recentHangs.add(report);
-            if (recentHangs.size() > 5) {
-                recentHangs.removeFirst();
+        // Everything below touches the Bukkit API, which is main-thread only,
+        // so it is handed to the scheduler. If the main thread is still hung
+        // the task simply waits, which is the correct behaviour.
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            HangReport report = createSimpleReport(duration);
+
+            synchronized (recentHangs) {
+                recentHangs.add(report);
+                if (recentHangs.size() > 5) {
+                    recentHangs.removeFirst();
+                }
             }
-        }
 
-        // Track cause
-        if (report.suspectedCause != null) {
-            hangCauses.merge(report.suspectedCause, 1, Integer::sum);
-        }
+            if (report.suspectedCause != null) {
+                hangCauses.merge(report.suspectedCause, 1, Integer::sum);
+            }
 
-        // Notify admins if configured
-        if (plugin.getConfigManager().isNotifyHangs()) {
-            notifyHang(duration);
-        }
+            if (plugin.getConfigManager().isNotifyHangs()) {
+                notifyHang(duration);
+            }
 
-        // Trigger emergency mode if threshold reached
-        if (hangCount >= emergencyTriggerCount && !emergencyMode) {
-            enableEmergencyMode();
-        }
+            if (shouldTriggerEmergency) {
+                enableEmergencyMode();
+            }
+        });
     }
 
-    private void handleCriticalHang(long duration) {
-        Logger.severe("CRITICAL HANG: " + duration + "ms - Emergency optimization!");
-
-        if (!emergencyMode) {
-            enableEmergencyMode();
-        }
-
-        if (autoEmergencyOptimization) {
-            performEmergencyOptimization();
-        }
-    }
-
-    /**
-     * Lightweight hang report - no heavy stack analysis
-     */
     private HangReport createSimpleReport(long duration) {
         HangReport report = new HangReport();
         report.timestamp = System.currentTimeMillis();
@@ -222,63 +227,40 @@ public class WatchdogMonitor {
         report.entityCount = getEntityCount();
         report.chunkCount = getChunkCount();
         report.memoryUsage = getMemoryUsage();
-
-        // Simple cause detection based on metrics
         report.suspectedCause = detectCauseFromMetrics(report);
-
         return report;
     }
 
-    /**
-     * Lightweight cause detection without stack traces
-     */
     private String detectCauseFromMetrics(HangReport report) {
-        // High entity count
-        if (report.entityCount > 5000) {
-            return "HIGH_ENTITY_COUNT";
-        }
-
-        // High chunk count
-        if (report.chunkCount > 3000) {
-            return "HIGH_CHUNK_COUNT";
-        }
-
-        // High memory
-        if (report.memoryUsage > 90) {
-            return "HIGH_MEMORY_USAGE";
-        }
-
-        // Low TPS with normal metrics = likely tick issue
-        if (report.tps < 10) {
-            return "TICK_PROCESSING";
-        }
-
+        if (report.entityCount > 5000) return "HIGH_ENTITY_COUNT";
+        if (report.chunkCount > 3000) return "HIGH_CHUNK_COUNT";
+        if (report.memoryUsage > 90) return "HIGH_MEMORY_USAGE";
+        if (report.tps < 10) return "TICK_PROCESSING";
         return "UNKNOWN";
     }
 
     private void notifyHang(long duration) {
         String message = "§e[Watchdog] §7Server hang detected: " + duration + "ms";
 
-        Bukkit.getOnlinePlayers().forEach(player -> {
+        for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
             if (player.hasPermission("ultraoptimize.notify")) {
                 player.sendMessage(message);
             }
-        });
+        }
     }
 
     private void enableEmergencyMode() {
         emergencyMode = true;
-        Logger.severe("╔═══════════════════════════╗");
-        Logger.severe("║  EMERGENCY MODE ACTIVATED  ║");
-        Logger.severe("╚═══════════════════════════╝");
+        healthyChecks = 0;
 
-        // Check config before notifying
+        Logger.severe("EMERGENCY MODE ACTIVATED - main thread stalls detected");
+
         if (plugin.getConfigManager().isNotifyEmergency()) {
-            Bukkit.getOnlinePlayers().forEach(player -> {
+            for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
                 if (player.hasPermission("ultraoptimize.notify")) {
                     player.sendMessage("§c§l[!] EMERGENCY MODE - Server lag detected!");
                 }
-            });
+            }
         }
 
         if (autoEmergencyOptimization) {
@@ -288,59 +270,57 @@ public class WatchdogMonitor {
 
     private void disableEmergencyMode() {
         emergencyMode = false;
-        Logger.info("Emergency mode deactivated");
+        healthyChecks = 0;
+        hangCount = 0;
+
+        Logger.info("Emergency mode deactivated - server has recovered");
 
         if (plugin.getConfigManager().isNotifyEmergency()) {
-            Bukkit.getOnlinePlayers().forEach(player -> {
-                if (player.hasPermission("ultraoptimize.notify")) {
-                    player.sendMessage("§a[✓] Emergency mode deactivated");
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
+                    if (player.hasPermission("ultraoptimize.notify")) {
+                        player.sendMessage("§a[+] Emergency mode deactivated");
+                    }
                 }
             });
         }
     }
 
     /**
-     * Lightweight emergency optimization
+     * One cleanup pass, rate limited, on the main thread.
+     *
+     * <p>Deliberately does not call System.gc(). Forcing a full stop-the-world
+     * collection on a heap that is already struggling adds a multi-second
+     * freeze to the exact problem it claims to solve, and the old code did it
+     * on every emergency trigger with no cooldown at all.
      */
     private void performEmergencyOptimization() {
+        long now = System.currentTimeMillis();
+        if (now - lastEmergencyTime < EMERGENCY_COOLDOWN_MILLIS) {
+            Logger.info("Emergency optimization skipped - ran " +
+                    ((now - lastEmergencyTime) / 1000) + "s ago");
+            return;
+        }
+        lastEmergencyTime = now;
+
         Logger.warning("Emergency optimization starting...");
 
-        // Everything below touches live Bukkit entities/chunks, which must
-        // happen on the main thread. This used to run optimizeWorld() (world
-        // .getEntities()/entity.remove()) inside runTaskAsynchronously(),
-        // off-thread - Paper's async-access checks reject that outright, and
-        // plain Spigot has no protection against it corrupting state at all.
-        // Entity/chunk cleanup here is cheap, so there's no need to offload
-        // any of it to a background thread.
         Bukkit.getScheduler().runTask(plugin, () -> {
             try {
                 int removed = 0;
-
-                // Clear non-essential entities
                 for (World world : Bukkit.getWorlds()) {
                     removed += plugin.getEntityManager().optimizeWorld(world);
                 }
+                Logger.warning("Emergency: removed " + removed + " entities");
 
-                Logger.warning("Emergency: Removed " + removed + " entities");
-
-                // Unload chunks
                 int unloaded = plugin.getChunkManager().unloadEmptyChunks();
-                Logger.warning("Emergency: Unloaded " + unloaded + " chunks");
-
-                // GC
-                System.gc();
-                Logger.warning("Emergency: Forced GC");
-
-                // Reset hang count
-                hangCount = 0;
+                Logger.warning("Emergency: unloaded " + unloaded + " chunks");
 
             } catch (Exception e) {
                 Logger.severe("Emergency optimization failed: " + e.getMessage());
             }
         });
     }
-
-    // Lightweight metric getters
 
     private int getEntityCount() {
         int total = 0;
@@ -371,7 +351,6 @@ public class WatchdogMonitor {
         stats.totalHangTime = totalHangTime;
         stats.currentHangCount = hangCount;
         stats.emergencyMode = emergencyMode;
-        stats.paperWatchdogSupported = paperWatchdogSupported;
 
         synchronized (recentHangs) {
             stats.recentHangs = new ArrayList<>(recentHangs);
@@ -386,7 +365,6 @@ public class WatchdogMonitor {
         return stats;
     }
 
-    // Configuration setters for runtime changes
     public void setHangThreshold(long milliseconds) {
         this.hangThreshold = milliseconds;
         Logger.info("Hang threshold updated to " + milliseconds + "ms");
@@ -408,10 +386,9 @@ public class WatchdogMonitor {
 
     public void resetHangCount() {
         hangCount = 0;
+        healthyChecks = 0;
         Logger.info("Hang counter reset");
     }
-
-    // Minimal inner classes
 
     public static class HangReport {
         public long timestamp;
@@ -437,6 +414,5 @@ public class WatchdogMonitor {
         public boolean emergencyMode;
         public List<HangReport> recentHangs;
         public Map<String, Integer> hangCauses;
-        public boolean paperWatchdogSupported;
     }
 }

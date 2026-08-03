@@ -1,5 +1,5 @@
 name: UltraOptimize
-version: 1.0
+version: ${project.version}
 main: me.rimuru.ultraoptimize.UltraOptimize
 api-version: 26.2
 author: Rimuru

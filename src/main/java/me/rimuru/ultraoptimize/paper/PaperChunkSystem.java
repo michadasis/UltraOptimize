@@ -278,6 +278,15 @@ public class PaperChunkSystem {
     /**
      * Keep spawn chunks loaded with tickets
      */
+    /**
+     * Pins the chunks around a world's spawn with plugin chunk tickets.
+     *
+     * <p>These are added with duration -1, i.e. permanently: the chunks can
+     * never unload for as long as the plugin is enabled, and they tick. That is
+     * a real memory commitment - roughly (2r+1)^2 chunks per world - so it is
+     * off by default. It also fights ChunkManager's aggressive unloader, which
+     * will keep trying and failing to unload them on every pass.
+     */
     public void ticketSpawnChunks(World world, int radius) {
         if (!isPaperSupported()) {
             Logger.debug("Spawn chunk tickets not available on this server");
@@ -313,6 +322,9 @@ public class PaperChunkSystem {
 
         for (String key : toRemove) {
             ChunkTicket ticket = activeTickets.get(key);
+            // Null-checked: another thread may have removed the entry between
+            // building the key list above and getting here.
+            if (ticket == null) continue;
             removeChunkTicket(world, ticket.chunkX, ticket.chunkZ);
         }
 

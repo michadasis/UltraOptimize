@@ -4,6 +4,7 @@ import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.config.ConfigManager;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Mob;
@@ -12,13 +13,19 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Reduces AI/pathfinding CPU cost by disabling awareness (goal and
- * pathfinding processing) for mobs that are outside advanced.pathfinding-limit
- * blocks of every player, per advanced.optimize-ai. The sweep interval is
- * derived from advanced.entity-tick-rate when advanced.optimize-entity-ticking
- * is enabled, otherwise it runs once a second.
+ * Reduces AI/pathfinding CPU cost by disabling awareness for mobs that are
+ * outside advanced.pathfinding-limit blocks of every player.
+ *
+ * <p>Note the tradeoff: an unaware mob does not path, so mob farms and grinders
+ * stop producing while their mobs are frozen, and frozen mobs accumulate rather
+ * than wandering into despawn range. On a memory-constrained server that can
+ * work against you. Raise pathfinding-limit or turn the feature off if entity
+ * counts start climbing.
  */
 public class EntityAIManager {
 
@@ -27,8 +34,21 @@ public class EntityAIManager {
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
+    /**
+     * Mobs this manager put to sleep. Restoration is limited to exactly these
+     * UUIDs: the old code called setAware(true) on any unaware mob it met near
+     * a player, and on every unaware mob in every world at shutdown, which
+     * silently woke up NoAI mobs placed deliberately by map makers, spawn eggs,
+     * or other plugins (Citizens-style NPCs, decorative mobs, arena setups).
+     */
+    private final Set<UUID> frozenMobs = ConcurrentHashMap.newKeySet();
+
+    // Reused across the sweep so proximity checks allocate no Location objects.
+    // The old isWithinRange() allocated two per mob per player per second.
+    private final Location mobLocation = new Location(null, 0, 0, 0);
+    private final Location playerLocation = new Location(null, 0, 0, 0);
+
     private BukkitTask task;
-    private int mobsFrozen;
 
     public EntityAIManager(UltraOptimize plugin) {
         this.plugin = plugin;
@@ -63,17 +83,10 @@ public class EntityAIManager {
     public void shutdown() {
         if (task != null) {
             task.cancel();
+            task = null;
         }
 
-        // Re-awaken anything we froze so behavior doesn't change if the
-        // feature gets disabled or the plugin reloads/unloads.
-        for (World world : Bukkit.getWorlds()) {
-            for (Entity entity : world.getEntities()) {
-                if (entity instanceof Mob && !((Mob) entity).isAware()) {
-                    ((Mob) entity).setAware(true);
-                }
-            }
-        }
+        thawAll();
     }
 
     public void restart() {
@@ -81,12 +94,28 @@ public class EntityAIManager {
         start();
     }
 
+    /** Re-awakens only the mobs this manager froze. */
+    private void thawAll() {
+        if (frozenMobs.isEmpty()) return;
+
+        for (World world : Bukkit.getWorlds()) {
+            for (Entity entity : world.getEntities()) {
+                if (!(entity instanceof Mob)) continue;
+                if (!frozenMobs.contains(entity.getUniqueId())) continue;
+
+                Mob mob = (Mob) entity;
+                if (!mob.isAware()) {
+                    mob.setAware(true);
+                }
+            }
+        }
+
+        frozenMobs.clear();
+    }
+
     private void sweep() {
         int limit = config.getPathfindingLimit();
-        // Snapshot of how many mobs are frozen as of *this* sweep, not just
-        // how many newly changed state this tick. A delta-only count
-        // collapses to ~0 almost immediately, since once a mob is frozen
-        // it no longer triggers a transition on later sweeps.
+        double limitSquared = (double) limit * limit;
         int frozenCount = 0;
 
         for (World world : Bukkit.getWorlds()) {
@@ -101,29 +130,49 @@ public class EntityAIManager {
 
                 if (config.getExemptEntities().contains(mob.getType())) continue;
 
-                boolean nearPlayer = isWithinRange(mob, players, limit);
+                UUID id = mob.getUniqueId();
+                boolean ours = frozenMobs.contains(id);
 
-                if (!nearPlayer) {
-                    if (mob.isAware()) {
+                // Never touch a mob that is already unaware for someone else's
+                // reasons - that is somebody's NPC or decoration.
+                if (!ours && !mob.isAware()) continue;
+
+                if (isWithinRange(mob, players, limitSquared)) {
+                    if (ours) {
+                        mob.setAware(true);
+                        frozenMobs.remove(id);
+                    }
+                } else {
+                    if (!ours) {
                         mob.setAware(false);
+                        frozenMobs.add(id);
                     }
                     frozenCount++;
-                } else if (!mob.isAware()) {
-                    mob.setAware(true);
                 }
             }
         }
 
-        mobsFrozen = frozenCount;
+        // Drop bookkeeping for mobs that have since died or unloaded.
+        if (frozenMobs.size() > frozenCount * 2 + 64) {
+            frozenMobs.removeIf(id -> Bukkit.getEntity(id) == null);
+        }
     }
 
-    private boolean isWithinRange(Mob mob, List<Player> players, int limit) {
-        double limitSquared = (double) limit * limit;
+    private boolean isWithinRange(Mob mob, List<Player> players, double limitSquared) {
+        mob.getLocation(mobLocation);
+
         for (Player player : players) {
-            if (player.getLocation().distanceSquared(mob.getLocation()) <= limitSquared) {
+            player.getLocation(playerLocation);
+
+            double dx = playerLocation.getX() - mobLocation.getX();
+            double dy = playerLocation.getY() - mobLocation.getY();
+            double dz = playerLocation.getZ() - mobLocation.getZ();
+
+            if ((dx * dx) + (dy * dy) + (dz * dz) <= limitSquared) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -135,14 +184,10 @@ public class EntityAIManager {
             return false;
         }
 
-        if (!enabled.isEmpty() && !enabled.contains(worldName)) {
-            return false;
-        }
-
-        return true;
+        return enabled.isEmpty() || enabled.contains(worldName);
     }
 
     public int getMobsFrozen() {
-        return mobsFrozen;
+        return frozenMobs.size();
     }
 }

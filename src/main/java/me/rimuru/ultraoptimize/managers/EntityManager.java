@@ -2,79 +2,73 @@ package me.rimuru.ultraoptimize.managers;
 
 import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.config.ConfigManager;
+import me.rimuru.ultraoptimize.utils.Keys;
 import me.rimuru.ultraoptimize.utils.Logger;
-import org.bukkit.*;
-import org.bukkit.entity.*;
+import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.entity.Arrow;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.ExperienceOrb;
+import org.bukkit.entity.Item;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Monster;
+import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 public class EntityManager {
 
-    private static final long CLEANUP_INTERVAL_TICKS = 20L * 300; // 5 minutes
-    // entityCounts backs the purely cosmetic "Top Entities" section of /uo
-    // stats, so it doesn't need per-event freshness - refreshing it on a
-    // short timer instead of inline in event handlers is what keeps
-    // updateEntityCounts()'s full Bukkit.getWorlds()/world.getEntities()
-    // scan off the hot path (see EntityListener).
-    private static final long ENTITY_COUNT_INTERVAL_TICKS = 100L; // 5 seconds
+    // Safety sweep only. pendingChunkMerges entries are released by the merge
+    // task itself one second after they are claimed; this exists purely so a
+    // slot cannot survive an unexpected task failure.
+    private static final long PENDING_SWEEP_INTERVAL_TICKS = 20L * 300; // 5 minutes
 
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
-    private final Map<EntityType, Integer> entityCounts;
-    private final Map<Location, Long> lastMergeTime;
-    // Chunks with an item-merge sweep already scheduled. A hopper, farm, or
-    // explosion can drop dozens of items in the same chunk within a single
-    // tick; without this, ItemSpawnEvent (see EntityListener) would schedule
-    // one delayed merge task - each doing its own getNearbyEntities() scan -
-    // per item instead of one task per chunk per burst.
-    private final Set<String> pendingChunkMerges;
+    // Chunks with an item-merge sweep already scheduled, keyed by world UID
+    // then packed chunk coordinate. A hopper, farm, or explosion can drop
+    // dozens of items in the same chunk within a single tick; without this,
+    // ItemSpawnEvent would schedule one delayed merge task - each doing its own
+    // getNearbyEntities() scan - per item instead of one task per chunk.
+    private final Map<UUID, Set<Long>> pendingChunkMerges;
 
-    private BukkitTask cleanupTask;
-    private BukkitTask entityCountTask;
+    private BukkitTask pendingSweepTask;
 
     public EntityManager(UltraOptimize plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
-        this.entityCounts = new ConcurrentHashMap<>();
-        this.lastMergeTime = new ConcurrentHashMap<>();
-        this.pendingChunkMerges = ConcurrentHashMap.newKeySet();
+        this.pendingChunkMerges = new ConcurrentHashMap<>();
     }
 
-    /**
-     * Starts a periodic sweep of lastMergeTime. Without this, entries only
-     * get pruned as a side effect of optimizeWorld() running (auto-optimize
-     * triggering or a manual /uo optimize), so a healthy server that never
-     * dips below the TPS threshold would otherwise grow this map forever as
-     * items merge. Also starts the periodic entityCounts refresh.
-     */
     public void start() {
-        cleanupTask = new BukkitRunnable() {
+        pendingSweepTask = new BukkitRunnable() {
             @Override
             public void run() {
-                cleanupMergeTimeCache();
+                pendingChunkMerges.clear();
             }
-        }.runTaskTimer(plugin, CLEANUP_INTERVAL_TICKS, CLEANUP_INTERVAL_TICKS);
-
-        entityCountTask = new BukkitRunnable() {
-            @Override
-            public void run() {
-                updateEntityCounts();
-            }
-        }.runTaskTimer(plugin, ENTITY_COUNT_INTERVAL_TICKS, ENTITY_COUNT_INTERVAL_TICKS);
+        }.runTaskTimer(plugin, PENDING_SWEEP_INTERVAL_TICKS, PENDING_SWEEP_INTERVAL_TICKS);
     }
 
     public void shutdown() {
-        if (cleanupTask != null) {
-            cleanupTask.cancel();
-        }
-        if (entityCountTask != null) {
-            entityCountTask.cancel();
+        if (pendingSweepTask != null) {
+            pendingSweepTask.cancel();
+            pendingSweepTask = null;
         }
         pendingChunkMerges.clear();
     }
@@ -83,24 +77,23 @@ public class EntityManager {
         if (world == null) return 0;
 
         int removed = 0;
-        Map<Chunk, List<Entity>> chunkEntities = new HashMap<>();
+        // Grouped by packed chunk key rather than by Chunk object: entity
+        // .getChunk() is a direct lookup, while the old
+        // entity.getLocation().getChunk() allocated a fresh Location for every
+        // entity in the world on every optimization pass.
+        Map<Long, List<Entity>> chunkEntities = new HashMap<>();
 
         try {
-            // Group entities by chunk for efficient processing
             for (Entity entity : world.getEntities()) {
-                if (!isEntityExempt(entity)) {
-                    Chunk chunk = entity.getLocation().getChunk();
-                    chunkEntities.computeIfAbsent(chunk, k -> new ArrayList<>()).add(entity);
-                }
+                if (isEntityExempt(entity)) continue;
+
+                long key = Keys.chunk(entity.getChunk());
+                chunkEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
             }
 
-            // Process each chunk
-            for (Map.Entry<Chunk, List<Entity>> entry : chunkEntities.entrySet()) {
-                removed += processChunkEntities(entry.getKey(), entry.getValue());
+            for (List<Entity> entities : chunkEntities.values()) {
+                removed += processChunkEntities(entities);
             }
-
-            // Clean up old merge time records
-            cleanupMergeTimeCache();
 
         } catch (Exception e) {
             Logger.severe("Error optimizing world " + world.getName() + ": " + e.getMessage());
@@ -110,7 +103,7 @@ public class EntityManager {
         return removed;
     }
 
-    private int processChunkEntities(Chunk chunk, List<Entity> entities) {
+    private int processChunkEntities(List<Entity> entities) {
         int removed = 0;
 
         try {
@@ -118,43 +111,32 @@ public class EntityManager {
             List<ExperienceOrb> expOrbs = new ArrayList<>();
             List<Arrow> arrows = new ArrayList<>();
             List<Monster> monsters = new ArrayList<>();
-            int itemCount = 0;
-            int mobCount = 0;
 
-            // Categorize entities
             for (Entity entity : entities) {
                 if (entity instanceof Item) {
                     items.add((Item) entity);
-                    itemCount++;
                 } else if (entity instanceof ExperienceOrb) {
                     expOrbs.add((ExperienceOrb) entity);
                 } else if (entity instanceof Arrow) {
                     arrows.add((Arrow) entity);
                 } else if (entity instanceof Monster) {
                     monsters.add((Monster) entity);
-                    mobCount++;
                 }
             }
 
-            // Merge nearby items and XP orbs
             if (config.isAutoMergeItems()) {
                 removed += mergeItems(items);
                 removed += mergeExperienceOrbs(expOrbs);
             }
 
-            // Remove stuck arrows
             removed += removeStuckArrows(arrows);
 
-            // Remove excess items
-            if (itemCount > config.getMaxItemsPerChunk()) {
-                int toRemove = itemCount - config.getMaxItemsPerChunk();
-                removed += removeExcessItems(items, toRemove);
+            if (items.size() > config.getMaxItemsPerChunk()) {
+                removed += removeExcessItems(items, items.size() - config.getMaxItemsPerChunk());
             }
 
-            // Remove excess mobs if lagging
-            if (mobCount > config.getMaxEntitiesPerChunk() && config.isClearLagging()) {
-                int toRemove = mobCount - config.getMaxEntitiesPerChunk();
-                removed += removeExcessMobs(monsters, toRemove);
+            if (monsters.size() > config.getMaxEntitiesPerChunk() && config.isClearLagging()) {
+                removed += removeExcessMobs(monsters, monsters.size() - config.getMaxEntitiesPerChunk());
             }
 
         } catch (Exception e) {
@@ -164,46 +146,63 @@ public class EntityManager {
         return removed;
     }
 
+    /**
+     * Merges stackable items that are within entities.item-merge-radius of one
+     * another.
+     *
+     * <p>The previous implementation sorted by {@code x + z} and broke out of
+     * the inner loop once that sum exceeded the radius. {@code x + z} is not a
+     * proximity ordering - two items twenty blocks apart on the anti-diagonal
+     * share a key - so the break both terminated early (missing valid merges)
+     * and ran long, degrading to O(n^2). Sorting by X alone gives a break
+     * condition that is actually sound: once the X gap exceeds the radius, no
+     * later item in the list can be in range.
+     *
+     * <p>Positions are also snapshotted once per item instead of calling
+     * {@code getLocation()} twice per comparison, which allocated two Location
+     * objects per pair.
+     */
     public int mergeItems(List<Item> items) {
         if (items == null || items.size() < 2) return 0;
 
         int merged = 0;
-        Map<Material, List<Item>> itemsByType = new HashMap<>();
+        double radius = config.getItemMergeRadius();
+        double radiusSquared = radius * radius;
 
         try {
-            // Group items by material type
+            Map<Material, List<Positioned>> itemsByType = new HashMap<>();
+
             for (Item item : items) {
                 if (item == null || item.isDead()) continue;
                 ItemStack stack = item.getItemStack();
                 if (stack == null) continue;
 
-                itemsByType.computeIfAbsent(stack.getType(), k -> new ArrayList<>()).add(item);
+                itemsByType.computeIfAbsent(stack.getType(), k -> new ArrayList<>())
+                        .add(new Positioned(item));
             }
 
-            // Merge similar items that are close together
-            for (List<Item> similarItems : itemsByType.values()) {
-                if (similarItems.size() < 2) continue;
+            for (List<Positioned> group : itemsByType.values()) {
+                if (group.size() < 2) continue;
 
-                // Sort by location for efficient proximity checking
-                similarItems.sort(Comparator.comparingDouble(item ->
-                        item.getLocation().getX() + item.getLocation().getZ()));
+                group.sort(Comparator.comparingDouble(p -> p.x));
 
-                for (int i = 0; i < similarItems.size(); i++) {
-                    Item item1 = similarItems.get(i);
-                    if (item1 == null || item1.isDead()) continue;
+                for (int i = 0; i < group.size(); i++) {
+                    Positioned first = group.get(i);
+                    if (first.item.isDead()) continue;
 
-                    for (int j = i + 1; j < similarItems.size(); j++) {
-                        Item item2 = similarItems.get(j);
-                        if (item2 == null || item2.isDead()) continue;
+                    for (int j = i + 1; j < group.size(); j++) {
+                        Positioned second = group.get(j);
+                        if (second.item.isDead()) continue;
 
-                        // Break if items are too far apart (optimization)
-                        double distance = item1.getLocation().distance(item2.getLocation());
-                        if (distance > config.getItemMergeRadius() * 2) break;
+                        // Sorted ascending by X, so nothing further along can
+                        // be in range once this gap is exceeded.
+                        if (second.x - first.x > radius) break;
 
-                        if (canMergeItems(item1, item2)) {
-                            if (mergeItemPair(item1, item2)) {
-                                merged++;
-                            }
+                        if (first.distanceSquaredTo(second) > radiusSquared) continue;
+
+                        if (mergeItemPair(first.item, second.item)) {
+                            merged++;
+                            if (first.item.isDead()) break;
                         }
                     }
                 }
@@ -221,101 +220,80 @@ public class EntityManager {
 
     /**
      * Attempts to reserve a merge sweep for the given chunk. Returns true if
-     * this call claimed the slot (no sweep was already pending for it), false
-     * if one is already scheduled and the caller should skip scheduling its own.
+     * this call claimed the slot, false if one is already scheduled.
      */
     public boolean claimChunkMergeSlot(Chunk chunk) {
-        return pendingChunkMerges.add(getChunkKey(chunk));
+        if (chunk == null) return false;
+        return pendingChunkMerges
+                .computeIfAbsent(chunk.getWorld().getUID(), k -> ConcurrentHashMap.newKeySet())
+                .add(Keys.chunk(chunk));
     }
 
     public void releaseChunkMergeSlot(Chunk chunk) {
-        pendingChunkMerges.remove(getChunkKey(chunk));
+        if (chunk == null) return;
+        Set<Long> chunks = pendingChunkMerges.get(chunk.getWorld().getUID());
+        if (chunks != null) {
+            chunks.remove(Keys.chunk(chunk));
+        }
     }
 
-    private String getChunkKey(Chunk chunk) {
-        return chunk.getWorld().getName() + "_" + chunk.getX() + "_" + chunk.getZ();
-    }
-
+    /**
+     * Merges items near the given one.
+     *
+     * <p>The per-location rate limit that used to guard this was a
+     * {@code Map<Location, Long>}. Location hashes on exact doubles plus yaw and
+     * pitch and holds a strong reference to its World, and item.getLocation()
+     * returns a fresh object with continuous coordinates - so the lookup never
+     * hit (the rate limit did nothing) while every merge inserted a permanent
+     * new key. The per-chunk claim above already debounces bursts, so the map is
+     * gone entirely.
+     */
     public void mergeNearbyItems(Item item) {
         if (item == null || item.isDead()) return;
 
         try {
-            Location loc = item.getLocation();
+            double radius = config.getItemMergeRadius();
+            List<Entity> nearby = item.getNearbyEntities(radius, radius, radius);
 
-            // Prevent too frequent merging at same location
-            Long lastMerge = lastMergeTime.get(loc);
-            if (lastMerge != null && System.currentTimeMillis() - lastMerge < 1000) {
-                return;
-            }
-
-            List<Entity> nearby = item.getNearbyEntities(
-                    config.getItemMergeRadius(),
-                    config.getItemMergeRadius(),
-                    config.getItemMergeRadius()
-            );
-
-            List<Item> items = nearby.stream()
-                    .filter(e -> e instanceof Item)
-                    .map(e -> (Item) e)
-                    .collect(Collectors.toList());
-
+            List<Item> items = new ArrayList<>(nearby.size() + 1);
             items.add(item);
-
-            if (mergeItems(items) > 0) {
-                lastMergeTime.put(loc, System.currentTimeMillis());
+            for (Entity entity : nearby) {
+                if (entity instanceof Item) {
+                    items.add((Item) entity);
+                }
             }
+
+            mergeItems(items);
 
         } catch (Exception e) {
             Logger.warning("Error merging nearby items: " + e.getMessage());
         }
     }
 
-    private boolean canMergeItems(Item item1, Item item2) {
+    /**
+     * Merges two item stacks if and only if they combine into a single legal
+     * stack.
+     *
+     * <p>The old code accepted pairs up to {@code maxStackSize * 2} and then
+     * "partially merged" them - rewriting both stacks, removing nothing, and
+     * returning false. Nothing converged: the same pair was reconsidered on
+     * every subsequent pass forever.
+     */
+    private boolean mergeItemPair(Item first, Item second) {
         try {
-            double distance = item1.getLocation().distance(item2.getLocation());
-            if (distance > config.getItemMergeRadius()) {
-                return false;
-            }
+            ItemStack stack1 = first.getItemStack();
+            ItemStack stack2 = second.getItemStack();
 
-            ItemStack stack1 = item1.getItemStack();
-            ItemStack stack2 = item2.getItemStack();
-
-            // Check if items are similar and stackable
-            if (!stack1.isSimilar(stack2)) {
-                return false;
-            }
-
-            // Don't merge if combined would exceed max stack
-            int total = stack1.getAmount() + stack2.getAmount();
-            return total <= stack1.getMaxStackSize() * 2; // Allow some overflow for optimization
-
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private boolean mergeItemPair(Item item1, Item item2) {
-        try {
-            ItemStack stack1 = item1.getItemStack();
-            ItemStack stack2 = item2.getItemStack();
+            if (stack1 == null || stack2 == null) return false;
+            if (!stack1.isSimilar(stack2)) return false;
 
             int total = stack1.getAmount() + stack2.getAmount();
-            int maxStack = stack1.getMaxStackSize();
+            if (total > stack1.getMaxStackSize()) return false;
 
-            if (total <= maxStack) {
-                // Merge completely
-                stack1.setAmount(total);
-                item1.setItemStack(stack1);
-                item2.remove();
-                return true;
-            } else {
-                // Merge partially
-                stack1.setAmount(maxStack);
-                stack2.setAmount(total - maxStack);
-                item1.setItemStack(stack1);
-                item2.setItemStack(stack2);
-                return false;
-            }
+            stack1.setAmount(total);
+            first.setItemStack(stack1);
+            second.remove();
+            return true;
 
         } catch (Exception e) {
             return false;
@@ -328,28 +306,33 @@ public class EntityManager {
         int merged = 0;
 
         try {
-            // Sort by location for efficient processing
-            orbs.sort(Comparator.comparingDouble(orb ->
-                    orb.getLocation().getX() + orb.getLocation().getZ()));
+            List<Positioned> positioned = new ArrayList<>(orbs.size());
+            for (ExperienceOrb orb : orbs) {
+                if (orb != null && !orb.isDead()) {
+                    positioned.add(new Positioned(orb));
+                }
+            }
 
-            for (int i = 0; i < orbs.size(); i++) {
-                ExperienceOrb orb1 = orbs.get(i);
-                if (orb1 == null || orb1.isDead()) continue;
+            // Same sound break condition as mergeItems: sorted by X.
+            positioned.sort(Comparator.comparingDouble(p -> p.x));
 
-                for (int j = i + 1; j < orbs.size(); j++) {
-                    ExperienceOrb orb2 = orbs.get(j);
-                    if (orb2 == null || orb2.isDead()) continue;
+            for (int i = 0; i < positioned.size(); i++) {
+                Positioned first = positioned.get(i);
+                if (first.entity.isDead()) continue;
 
-                    double distance = orb1.getLocation().distance(orb2.getLocation());
+                for (int j = i + 1; j < positioned.size(); j++) {
+                    Positioned second = positioned.get(j);
+                    if (second.entity.isDead()) continue;
 
-                    // Break if orbs are too far (optimization)
-                    if (distance > 2.0) break;
+                    if (second.x - first.x > 1.0) break;
+                    if (first.distanceSquaredTo(second) > 1.0) continue;
 
-                    if (distance < 1.0) {
-                        orb1.setExperience(orb1.getExperience() + orb2.getExperience());
-                        orb2.remove();
-                        merged++;
-                    }
+                    ExperienceOrb orb1 = (ExperienceOrb) first.entity;
+                    ExperienceOrb orb2 = (ExperienceOrb) second.entity;
+
+                    orb1.setExperience(orb1.getExperience() + orb2.getExperience());
+                    orb2.remove();
+                    merged++;
                 }
             }
 
@@ -367,7 +350,6 @@ public class EntityManager {
             for (Arrow arrow : arrows) {
                 if (arrow == null || arrow.isDead()) continue;
 
-                // Remove arrows that are stuck in ground/blocks
                 if (arrow.isInBlock() || arrow.getTicksLived() > 6000) { // 5 minutes
                     arrow.remove();
                     removed++;
@@ -384,7 +366,7 @@ public class EntityManager {
         int removed = 0;
 
         try {
-            // Sort by age (remove oldest first)
+            // Oldest first.
             items.sort(Comparator.comparingInt(Item::getTicksLived).reversed());
 
             for (int i = 0; i < toRemove && i < items.size(); i++) {
@@ -405,7 +387,6 @@ public class EntityManager {
         int removed = 0;
 
         try {
-            // Sort by type (remove common mobs first) and health
             monsters.sort((m1, m2) -> {
                 int priority1 = getMobPriority(m1.getType());
                 int priority2 = getMobPriority(m2.getType());
@@ -417,7 +398,7 @@ public class EntityManager {
 
             for (int i = 0; i < toRemove && i < monsters.size(); i++) {
                 Monster mob = monsters.get(i);
-                if (mob != null && !mob.isDead()) {
+                if (mob != null && !mob.isDead() && getMobPriority(mob.getType()) < 10) {
                     mob.remove();
                     removed++;
                 }
@@ -430,26 +411,32 @@ public class EntityManager {
     }
 
     private int getMobPriority(EntityType type) {
-        // Lower priority = removed first
+        // Lower priority = removed first. 10 means never remove.
         switch (type) {
-            case ZOMBIE:
-            case SKELETON:
-            case SPIDER:
-                return 1; // Common mobs
             case CREEPER:
             case ENDERMAN:
-                return 2; // Less common
+                return 2;
             case BLAZE:
             case GHAST:
-                return 3; // Nether mobs
+                return 3;
             case WITHER:
             case ENDER_DRAGON:
-                return 10; // Bosses (never remove)
+                return 10;
             default:
                 return 1;
         }
     }
 
+    /**
+     * Clears entities of the given category.
+     *
+     * <p>ALL is a whitelist, not "everything that is not a Player". The old
+     * inverted test deleted chest, hopper and furnace minecarts and their
+     * contents, tamed wolves and cats, saddled horses, and llamas with cargo -
+     * and relied on entities.exempt-types to save them, which silently fails
+     * whenever a name in that list is not a valid EntityType on the running
+     * version (BOAT, for one, no longer exists as of 1.21.2).
+     */
     public int clearEntities(World world, EntityClearType type) {
         int removed = 0;
 
@@ -458,8 +445,9 @@ public class EntityManager {
 
             for (Entity entity : world.getEntities()) {
                 if (isEntityExempt(entity)) continue;
+                if (entity instanceof Player) continue;
 
-                boolean shouldRemove = false;
+                boolean shouldRemove;
 
                 switch (type) {
                     case ITEMS:
@@ -475,7 +463,13 @@ public class EntityManager {
                         shouldRemove = entity instanceof Arrow;
                         break;
                     case ALL:
-                        shouldRemove = !(entity instanceof Player);
+                        shouldRemove = entity instanceof Item
+                                || entity instanceof ExperienceOrb
+                                || entity instanceof Projectile
+                                || entity instanceof Monster;
+                        break;
+                    default:
+                        shouldRemove = false;
                         break;
                 }
 
@@ -484,7 +478,6 @@ public class EntityManager {
                 }
             }
 
-            // Remove in batches for better performance
             for (Entity entity : toRemove) {
                 entity.remove();
                 removed++;
@@ -498,30 +491,24 @@ public class EntityManager {
         return removed;
     }
 
-    public void updateEntityCounts() {
-        entityCounts.clear();
-
-        try {
-            for (World world : Bukkit.getWorlds()) {
-                for (Entity entity : world.getEntities()) {
-                    entityCounts.merge(entity.getType(), 1, Integer::sum);
-                }
-            }
-        } catch (Exception e) {
-            Logger.warning("Error updating entity counts: " + e.getMessage());
-        }
-    }
-
     public boolean isEntityExempt(Entity entity) {
         if (entity == null) return true;
         return config.getExemptEntities().contains(entity.getType());
     }
 
-    public boolean canEntitySpawn(Chunk chunk, EntityType type) {
+    /**
+     * Whether another mob may spawn in this chunk.
+     *
+     * <p>Counts living non-player entities, which is what
+     * entities.max-per-chunk actually means. The old version counted only
+     * entities of the incoming type but compared that against the overall
+     * per-chunk cap, so the limit never bound in mixed-mob chunks.
+     */
+    public boolean canEntitySpawn(Chunk chunk) {
         try {
             int count = 0;
             for (Entity entity : chunk.getEntities()) {
-                if (entity.getType() == type) {
+                if (entity instanceof LivingEntity && !(entity instanceof Player)) {
                     count++;
                 }
             }
@@ -533,13 +520,29 @@ public class EntityManager {
         }
     }
 
-    private void cleanupMergeTimeCache() {
-        long now = System.currentTimeMillis();
-        lastMergeTime.entrySet().removeIf(entry -> now - entry.getValue() > 60000); // 1 minute
-    }
-
+    /**
+     * Counts entities by type across all worlds.
+     *
+     * <p>Computed on demand. This used to run on a 5-second timer to keep a
+     * cached map warm for the cosmetic "Top Entities" block in /uo stats -
+     * a full Bukkit.getWorlds()/world.getEntities() walk, allocating a fresh
+     * list of every entity on the server, twelve times a minute, for a display
+     * nobody was looking at.
+     */
     public Map<EntityType, Integer> getEntityCounts() {
-        return new HashMap<>(entityCounts);
+        Map<EntityType, Integer> counts = new EnumMap<>(EntityType.class);
+
+        try {
+            for (World world : Bukkit.getWorlds()) {
+                for (Entity entity : world.getEntities()) {
+                    counts.merge(entity.getType(), 1, Integer::sum);
+                }
+            }
+        } catch (Exception e) {
+            Logger.warning("Error counting entities: " + e.getMessage());
+        }
+
+        return counts;
     }
 
     public int getTotalEntities() {
@@ -552,5 +555,42 @@ public class EntityManager {
 
     public enum EntityClearType {
         ITEMS, MOBS, XP, ARROWS, ALL
+    }
+
+    /**
+     * An entity plus a snapshot of its position, so proximity checks don't
+     * allocate a Location per comparison.
+     */
+    private static final class Positioned {
+        final Entity entity;
+        final Item item;
+        final double x;
+        final double y;
+        final double z;
+
+        Positioned(Item item) {
+            this.entity = item;
+            this.item = item;
+            org.bukkit.Location loc = item.getLocation();
+            this.x = loc.getX();
+            this.y = loc.getY();
+            this.z = loc.getZ();
+        }
+
+        Positioned(ExperienceOrb orb) {
+            this.entity = orb;
+            this.item = null;
+            org.bukkit.Location loc = orb.getLocation();
+            this.x = loc.getX();
+            this.y = loc.getY();
+            this.z = loc.getZ();
+        }
+
+        double distanceSquaredTo(Positioned other) {
+            double dx = x - other.x;
+            double dy = y - other.y;
+            double dz = z - other.z;
+            return (dx * dx) + (dy * dy) + (dz * dz);
+        }
     }
 }
