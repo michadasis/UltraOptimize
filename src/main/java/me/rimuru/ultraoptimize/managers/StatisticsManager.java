@@ -53,8 +53,10 @@ public class StatisticsManager {
      * just a clean shutdown.
      */
     public void start() {
-        autosaveTask = Bukkit.getScheduler().runTaskTimer(plugin, this::persistLifetimeStatistics,
-                AUTOSAVE_INTERVAL_TICKS, AUTOSAVE_INTERVAL_TICKS);
+        // Asynchronous: this writes a YAML file to disk, and the counters it
+        // reads are all Atomics. There is no reason to stall a tick for it.
+        autosaveTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin,
+                this::persistLifetimeStatistics, AUTOSAVE_INTERVAL_TICKS, AUTOSAVE_INTERVAL_TICKS);
     }
 
     public void shutdown() {

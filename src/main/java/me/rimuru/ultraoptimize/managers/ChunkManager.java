@@ -2,6 +2,8 @@ package me.rimuru.ultraoptimize.managers;
 
 import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.config.ConfigManager;
+import me.rimuru.ultraoptimize.utils.ChunkUtil;
+import me.rimuru.ultraoptimize.utils.Keys;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -11,17 +13,30 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ChunkManager {
 
+    // Was 100 ticks (5 seconds). Every pass walks every loaded chunk in every
+    // world, so on a server with a few hundred loaded chunks this was running
+    // thousands of chunk inspections a minute to populate a diagnostic map.
+    private static final long MONITOR_INTERVAL_TICKS = 1200L; // 60 seconds
+    private static final long CHUNK_DATA_TTL_MILLIS = 300_000L; // 5 minutes
+
     private final UltraOptimize plugin;
     private final ConfigManager config;
 
-    private final Map<String, Long> chunkLoadTimes;
-    private final Map<String, ChunkData> chunkDataMap;
-    private final Set<String> problematicChunks;
+    // Keyed by world UID, then packed chunk coordinate. The old
+    // "world_x_z" String keys allocated on every chunk load and every
+    // monitor pass. chunkLoadTimes has been dropped entirely - it was written
+    // on every ChunkLoadEvent and never read by anything.
+    private final Map<UUID, Map<Long, ChunkData>> chunkDataMap;
+    private final Map<UUID, Set<Long>> problematicChunks;
 
     private BukkitTask unloadTask;
     private BukkitTask monitorTask;
@@ -29,9 +44,8 @@ public class ChunkManager {
     public ChunkManager(UltraOptimize plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
-        this.chunkLoadTimes = new ConcurrentHashMap<>();
         this.chunkDataMap = new ConcurrentHashMap<>();
-        this.problematicChunks = ConcurrentHashMap.newKeySet();
+        this.problematicChunks = new ConcurrentHashMap<>();
     }
 
     public void start() {
@@ -45,12 +59,14 @@ public class ChunkManager {
     public void shutdown() {
         if (unloadTask != null) {
             unloadTask.cancel();
+            unloadTask = null;
         }
         if (monitorTask != null) {
             monitorTask.cancel();
+            monitorTask = null;
         }
-        chunkLoadTimes.clear();
         chunkDataMap.clear();
+        problematicChunks.clear();
         Logger.info("ChunkManager shut down");
     }
 
@@ -86,7 +102,7 @@ public class ChunkManager {
                     e.printStackTrace();
                 }
             }
-        }.runTaskTimer(plugin, 100L, 100L);
+        }.runTaskTimer(plugin, MONITOR_INTERVAL_TICKS, MONITOR_INTERVAL_TICKS);
     }
 
     private void performAggressiveUnload() {
@@ -96,20 +112,22 @@ public class ChunkManager {
         for (World world : Bukkit.getWorlds()) {
             if (!isWorldEnabled(world.getName())) continue;
 
+            // Player chunk coordinates are gathered once per world instead of
+            // per candidate chunk - isNearPlayer() used to allocate a Location
+            // and a Chunk lookup for every player for every loaded chunk.
+            long[] playerChunks = collectPlayerChunkCoords(world);
+
             Chunk[] loadedChunks = world.getLoadedChunks();
             totalLoaded += loadedChunks.length;
 
             int unloaded = 0;
             for (Chunk chunk : loadedChunks) {
-                if (shouldUnloadChunk(chunk, world)) {
+                if (shouldUnloadChunk(chunk, world, playerChunks)) {
                     try {
-                        chunk.unload(true);
-                        unloaded++;
-
-                        String key = getChunkKey(chunk, world);
-                        chunkLoadTimes.remove(key);
-                        chunkDataMap.remove(key);
-
+                        if (chunk.unload(true)) {
+                            unloaded++;
+                            forgetChunk(world, chunk.getX(), chunk.getZ());
+                        }
                     } catch (Exception e) {
                         Logger.warning("Failed to unload chunk at " +
                                 chunk.getX() + "," + chunk.getZ() +
@@ -119,74 +137,84 @@ public class ChunkManager {
             }
 
             totalUnloaded += unloaded;
-
-            if (unloaded > 0) {
-                Logger.info("Unloaded " + unloaded + " chunks in " + world.getName());
-            }
         }
 
-        // Check max loaded chunks limit
         if (config.getMaxLoadedChunks() > 0 && totalLoaded > config.getMaxLoadedChunks()) {
             Logger.warning("Total loaded chunks (" + totalLoaded + ") exceeds limit (" +
                     config.getMaxLoadedChunks() + ")");
         }
 
         if (totalUnloaded > 0) {
-            Logger.info("Total chunks unloaded: " + totalUnloaded + " (Total loaded: " + totalLoaded + ")");
+            plugin.getStatisticsManager().incrementChunksUnloaded(totalUnloaded);
+            Logger.info("Unloaded " + totalUnloaded + " chunks (total loaded: " + totalLoaded + ")");
         }
     }
 
+    private long[] collectPlayerChunkCoords(World world) {
+        List<Player> players = world.getPlayers();
+        long[] coords = new long[players.size()];
+
+        for (int i = 0; i < players.size(); i++) {
+            Location loc = players.get(i).getLocation();
+            coords[i] = Keys.chunk(loc.getBlockX() >> 4, loc.getBlockZ() >> 4);
+        }
+
+        return coords;
+    }
+
     private void monitorChunks() {
+        long now = System.currentTimeMillis();
+
         for (World world : Bukkit.getWorlds()) {
             if (!isWorldEnabled(world.getName())) continue;
 
+            UUID worldId = world.getUID();
+            Map<Long, ChunkData> worldData =
+                    chunkDataMap.computeIfAbsent(worldId, k -> new ConcurrentHashMap<>());
+            Set<Long> worldProblems =
+                    problematicChunks.computeIfAbsent(worldId, k -> ConcurrentHashMap.newKeySet());
+
             for (Chunk chunk : world.getLoadedChunks()) {
-                String key = getChunkKey(chunk, world);
+                long key = Keys.chunk(chunk);
 
-                ChunkData data = chunkDataMap.computeIfAbsent(key, k -> new ChunkData());
+                ChunkData data = worldData.computeIfAbsent(key, k -> new ChunkData());
                 data.entityCount = chunk.getEntities().length;
-                data.tileEntityCount = chunk.getTileEntities().length;
-                data.lastCheck = System.currentTimeMillis();
+                // Non-snapshot count - see ChunkUtil.
+                data.tileEntityCount = ChunkUtil.countTileEntities(chunk);
+                data.lastCheck = now;
 
-                // Mark problematic chunks
                 if (data.entityCount > config.getMaxEntitiesPerChunk() * 2) {
-                    if (!problematicChunks.contains(key)) {
-                        problematicChunks.add(key);
+                    if (worldProblems.add(key)) {
                         Logger.warning("Problematic chunk detected at " + chunk.getX() +
                                 "," + chunk.getZ() + " in " + world.getName() +
                                 " with " + data.entityCount + " entities");
                     }
                 } else {
-                    problematicChunks.remove(key);
+                    worldProblems.remove(key);
                 }
             }
         }
 
-        // Clean up old data
-        long now = System.currentTimeMillis();
-        chunkDataMap.entrySet().removeIf(entry ->
-                now - entry.getValue().lastCheck > 60000
-        );
+        for (Map<Long, ChunkData> worldData : chunkDataMap.values()) {
+            worldData.entrySet().removeIf(entry -> now - entry.getValue().lastCheck > CHUNK_DATA_TTL_MILLIS);
+        }
     }
 
-    public boolean shouldUnloadChunk(Chunk chunk, World world) {
+    public boolean shouldUnloadChunk(Chunk chunk, World world, long[] playerChunks) {
         try {
-            // Don't unload spawn chunks
             if (isSpawnChunk(chunk, world)) {
                 return false;
             }
 
-            // Don't unload chunks near players
-            if (isNearPlayer(chunk, world)) {
+            if (isNearPlayer(chunk, playerChunks)) {
                 return false;
             }
 
-            // Check if chunk is empty
             if (config.isUnloadEmpty()) {
                 int entities = chunk.getEntities().length;
-                int tileEntities = chunk.getTileEntities().length;
+                if (entities >= 3) return false;
 
-                return entities < 3 && tileEntities < 2;
+                return ChunkUtil.countTileEntities(chunk) < 2;
             }
 
             return false;
@@ -211,53 +239,40 @@ public class ChunkManager {
         }
     }
 
-    private boolean isNearPlayer(Chunk chunk, World world) {
-        try {
-            int unloadRadius = config.getUnloadRadius();
+    private boolean isNearPlayer(Chunk chunk, long[] playerChunks) {
+        int unloadRadius = config.getUnloadRadius();
+        int chunkX = chunk.getX();
+        int chunkZ = chunk.getZ();
 
-            for (Player player : world.getPlayers()) {
-                Chunk playerChunk = player.getLocation().getChunk();
-                int dx = Math.abs(playerChunk.getX() - chunk.getX());
-                int dz = Math.abs(playerChunk.getZ() - chunk.getZ());
+        for (long packed : playerChunks) {
+            int px = (int) (packed >> 32);
+            int pz = (int) packed;
 
-                if (dx <= unloadRadius && dz <= unloadRadius) {
-                    return true;
-                }
+            if (Math.abs(px - chunkX) <= unloadRadius && Math.abs(pz - chunkZ) <= unloadRadius) {
+                return true;
             }
-
-            return false;
-
-        } catch (Exception e) {
-            return true; // Safe default
         }
-    }
 
-    public void onChunkLoad(Chunk chunk, World world) {
-        try {
-            String key = getChunkKey(chunk, world);
-            chunkLoadTimes.put(key, System.currentTimeMillis());
-
-            ChunkData data = new ChunkData();
-            data.entityCount = chunk.getEntities().length;
-            data.tileEntityCount = chunk.getTileEntities().length;
-            data.lastCheck = System.currentTimeMillis();
-            chunkDataMap.put(key, data);
-
-        } catch (Exception e) {
-            Logger.warning("Error processing chunk load: " + e.getMessage());
-        }
+        return false;
     }
 
     public void onChunkUnload(Chunk chunk, World world) {
         try {
-            String key = getChunkKey(chunk, world);
-            chunkLoadTimes.remove(key);
-            chunkDataMap.remove(key);
-            problematicChunks.remove(key);
-
+            forgetChunk(world, chunk.getX(), chunk.getZ());
         } catch (Exception e) {
             Logger.warning("Error processing chunk unload: " + e.getMessage());
         }
+    }
+
+    private void forgetChunk(World world, int chunkX, int chunkZ) {
+        UUID worldId = world.getUID();
+        long key = Keys.chunk(chunkX, chunkZ);
+
+        Map<Long, ChunkData> worldData = chunkDataMap.get(worldId);
+        if (worldData != null) worldData.remove(key);
+
+        Set<Long> worldProblems = problematicChunks.get(worldId);
+        if (worldProblems != null) worldProblems.remove(key);
     }
 
     public int unloadEmptyChunks() {
@@ -266,16 +281,24 @@ public class ChunkManager {
         for (World world : Bukkit.getWorlds()) {
             if (!isWorldEnabled(world.getName())) continue;
 
+            long[] playerChunks = collectPlayerChunkCoords(world);
+
             for (Chunk chunk : world.getLoadedChunks()) {
-                if (shouldUnloadChunk(chunk, world)) {
+                if (shouldUnloadChunk(chunk, world, playerChunks)) {
                     try {
-                        chunk.unload(true);
-                        unloaded++;
+                        if (chunk.unload(true)) {
+                            unloaded++;
+                            forgetChunk(world, chunk.getX(), chunk.getZ());
+                        }
                     } catch (Exception e) {
                         Logger.warning("Failed to unload chunk: " + e.getMessage());
                     }
                 }
             }
+        }
+
+        if (unloaded > 0) {
+            plugin.getStatisticsManager().incrementChunksUnloaded(unloaded);
         }
 
         return unloaded;
@@ -288,8 +311,12 @@ public class ChunkManager {
             stats.totalChunks += world.getLoadedChunks().length;
         }
 
-        stats.trackedChunks = chunkDataMap.size();
-        stats.problematicChunks = problematicChunks.size();
+        for (Map<Long, ChunkData> worldData : chunkDataMap.values()) {
+            stats.trackedChunks += worldData.size();
+        }
+        for (Set<Long> worldProblems : problematicChunks.values()) {
+            stats.problematicChunks += worldProblems.size();
+        }
 
         return stats;
     }
@@ -302,22 +329,24 @@ public class ChunkManager {
             return false;
         }
 
-        if (!enabled.isEmpty() && !enabled.contains(worldName)) {
-            return false;
-        }
-
-        return true;
-    }
-
-    private String getChunkKey(Chunk chunk, World world) {
-        return world.getName() + "_" + chunk.getX() + "_" + chunk.getZ();
+        return enabled.isEmpty() || enabled.contains(worldName);
     }
 
     public Set<String> getProblematicChunks() {
-        return new HashSet<>(problematicChunks);
+        Set<String> result = new HashSet<>();
+
+        for (Map.Entry<UUID, Set<Long>> entry : problematicChunks.entrySet()) {
+            World world = Bukkit.getWorld(entry.getKey());
+            String worldName = world != null ? world.getName() : entry.getKey().toString();
+
+            for (long key : entry.getValue()) {
+                result.add(worldName + "_" + (int) (key >> 32) + "_" + (int) key);
+            }
+        }
+
+        return result;
     }
 
-    // Inner classes
     private static class ChunkData {
         int entityCount;
         int tileEntityCount;

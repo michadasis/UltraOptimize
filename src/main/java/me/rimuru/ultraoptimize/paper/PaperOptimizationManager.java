@@ -31,15 +31,38 @@ public class PaperOptimizationManager {
      * Detect if running on Paper and initialize Paper-specific features
      */
     private void detectPaper() {
-        try {
-            Class.forName("com.destroystokyo.paper.PaperConfig");
+        // The old check was Class.forName("com.destroystokyo.paper.PaperConfig").
+        // That is a server-internal class, and Paper moved its configuration
+        // system to io.papermc.paper.configuration in 1.19 - so on any current
+        // build the lookup threw, paperDetected stayed false, and every Paper
+        // feature silently disabled itself while the console cheerfully
+        // announced "Running on Spigot/Bukkit".
+        serverVersion = Bukkit.getVersion();
+
+        String name = Bukkit.getName();
+        if (name != null && (name.contains("Paper") || name.contains("Purpur") || name.contains("Folia"))) {
             paperDetected = true;
-            serverVersion = Bukkit.getVersion();
+        } else if (Bukkit.getVersion() != null && Bukkit.getVersion().contains("Paper")) {
+            paperDetected = true;
+        } else {
+            paperDetected = classExists("io.papermc.paper.configuration.GlobalConfiguration")
+                    || classExists("com.destroystokyo.paper.PaperConfig");
+        }
+
+        if (paperDetected) {
             Logger.info("Paper server detected: " + serverVersion);
             Logger.info("Paper-specific optimizations available");
-        } catch (ClassNotFoundException e) {
-            paperDetected = false;
+        } else {
             Logger.info("Running on Spigot/Bukkit - Paper features disabled");
+        }
+    }
+
+    private boolean classExists(String className) {
+        try {
+            Class.forName(className);
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
         }
     }
 
@@ -195,12 +218,14 @@ public class PaperOptimizationManager {
             // unsaved dirty chunks means those chunks' data isn't reflected
             // on disk yet. Flushing first ensures the file we check reflects
             // the latest state.
-            if (regionOptimizer != null) {
-                regionOptimizer.flushRegionCache();
-            }
-
-            // Remove empty regions if configured
             if (regionOptimizer != null && plugin.getConfigManager().isPaperRemoveEmptyRegions()) {
+                // The save only happens when we are actually about to delete
+                // .mca files, so that what is on disk reflects the live world.
+                // It used to run unconditionally, meaning /uo paper optimize
+                // forced a full synchronous world save even when it had nothing
+                // to do afterwards.
+                regionOptimizer.flushRegionCache();
+
                 for (World world : Bukkit.getWorlds()) {
                     result.emptyRegionsRemoved += regionOptimizer.removeEmptyRegions(world);
                 }

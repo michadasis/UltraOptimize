@@ -10,92 +10,68 @@ import org.bukkit.scheduler.BukkitTask;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Region file optimization for Paper servers
- * Manages region file cache, incremental saving, and file cleanup
+ * Region file reporting and cleanup.
+ *
+ * <p><b>What "incremental saving" actually was.</b> The old code looked up
+ * {@code World#save(boolean)} by reflection and, on the strength of finding it,
+ * called itself Paper-accelerated. No such overload exists in the Bukkit or
+ * Paper API - only the no-argument {@code World#save()} - so the lookup always
+ * failed and every run fell through to a full, synchronous, main-thread save of
+ * every loaded chunk in every world. On a 30 second timer. On a 1GB host with a
+ * shared disk that is a multi-hundred-millisecond freeze twice a minute,
+ * forever.
+ *
+ * <p>There is no API for an off-thread or genuinely incremental world save, so
+ * the honest fix is: default the feature off, be explicit in the log about what
+ * it does when it is on, and hold the minimum interval well away from 30s.
  */
 public class RegionFileOptimizer {
 
+    private static final long RESCAN_INTERVAL_TICKS = 20L * 600; // 10 minutes
+
     private final UltraOptimize plugin;
+
+    // Rebuilt wholesale by the periodic async rescan. The previous code paired
+    // this with a lastAccessTimes map that nothing ever wrote to, so the
+    // "cache cleanup" task ran every 60 seconds and removed exactly nothing
+    // while this map grew at startup and was never pruned.
     private final Map<String, RegionFileInfo> regionFiles;
-    private final Map<String, Long> lastAccessTimes;
     private final AtomicLong totalRegionSize;
+    private final AtomicInteger totalRegions;
 
-    private BukkitTask optimizationTask;
-    private BukkitTask cleanupTask;
+    private BukkitTask saveTask;
+    private BukkitTask rescanTask;
 
-    // Paper API methods
-    private Method saveIncrementallyMethod;
-    private boolean paperRegionSupported;
-
-    // Configuration - loaded from config instead of hardcoded
     private boolean incrementalSaving;
-    private int saveInterval; // in seconds
-    private int cacheCleanupInterval; // in seconds
-    private long regionCacheTimeout;
+    private int saveInterval;
     private boolean autoRemoveEmptyRegions;
-
-    // Statistics
-    private int totalRegions;
 
     public RegionFileOptimizer(UltraOptimize plugin) {
         this.plugin = plugin;
         this.regionFiles = new ConcurrentHashMap<>();
-        this.lastAccessTimes = new ConcurrentHashMap<>();
         this.totalRegionSize = new AtomicLong(0);
+        this.totalRegions = new AtomicInteger(0);
 
-        // Load configuration
         loadConfiguration();
-
-        initializePaperRegionAPI();
-        scanWorldRegions();
     }
 
     private void loadConfiguration() {
-        // Load from config instead of hardcoding
         this.incrementalSaving = plugin.getConfigManager().isPaperIncrementalSaving();
         this.saveInterval = plugin.getConfigManager().getPaperSaveInterval();
-        this.cacheCleanupInterval = plugin.getConfigManager().getPaperCacheCleanupInterval();
-        this.regionCacheTimeout = plugin.getConfigManager().getPaperCacheTimeout();
         this.autoRemoveEmptyRegions = plugin.getConfigManager().isPaperRemoveEmptyRegions();
 
         Logger.info("Region file optimizer configuration loaded:");
-        Logger.info("  Incremental saving: " + (incrementalSaving ? "ENABLED" : "DISABLED"));
+        Logger.info("  Periodic world save: " + (incrementalSaving ? "ENABLED" : "DISABLED"));
         Logger.info("  Save interval: " + saveInterval + "s");
-        Logger.info("  Cache cleanup interval: " + cacheCleanupInterval + "s");
-        Logger.info("  Cache timeout: " + (regionCacheTimeout / 1000) + "s");
         Logger.info("  Auto remove empty: " + (autoRemoveEmptyRegions ? "ENABLED" : "DISABLED"));
-    }
-
-    private void initializePaperRegionAPI() {
-        try {
-            // Check for Paper's incremental saving API
-            Class<?> worldClass = World.class;
-
-            try {
-                saveIncrementallyMethod = worldClass.getMethod("save", boolean.class);
-                Logger.info("Paper incremental save API detected");
-            } catch (NoSuchMethodException e) {
-                Logger.debug("Incremental save API not available");
-            }
-
-            paperRegionSupported = (saveIncrementallyMethod != null);
-
-            if (paperRegionSupported) {
-                Logger.info("Paper region file optimization initialized");
-            } else {
-                Logger.info("Using standard region file handling");
-            }
-
-        } catch (Exception e) {
-            Logger.warning("Failed to initialize Paper region API: " + e.getMessage());
-            paperRegionSupported = false;
-        }
     }
 
     public void start() {
@@ -104,153 +80,116 @@ public class RegionFileOptimizer {
             return;
         }
 
-        // Start incremental save task
-        if (incrementalSaving) {
-            startIncrementalSaving();
-        }
+        // Region scanning is pure disk I/O with no Bukkit API involved, so it
+        // belongs off the main thread. Doing it in the constructor stat'd every
+        // .mca file in every world before the server finished enabling, and
+        // repeated it on every /uo reload.
+        scheduleRescan();
 
-        // Start cache cleanup task
-        startCacheCleanup();
+        if (incrementalSaving) {
+            startPeriodicSave();
+        }
 
         Logger.info("Region file optimizer started");
     }
 
     public void shutdown() {
-        if (optimizationTask != null) {
-            optimizationTask.cancel();
+        if (saveTask != null) {
+            saveTask.cancel();
+            saveTask = null;
         }
-        if (cleanupTask != null) {
-            cleanupTask.cancel();
+        if (rescanTask != null) {
+            rescanTask.cancel();
+            rescanTask = null;
         }
 
-        // Final save
-        saveAllWorlds(false);
-
+        // No save on shutdown. This ran on every /uo reload, and the server
+        // saves its own worlds when it stops.
         Logger.info("Region file optimizer stopped");
     }
 
-    private void startIncrementalSaving() {
-        optimizationTask = new BukkitRunnable() {
+    private void startPeriodicSave() {
+        Logger.warning("paper.region-files.incremental-saving is ON: this performs a FULL, " +
+                "SYNCHRONOUS world save every " + saveInterval + "s on the main thread. " +
+                "There is no API for an incremental or async save. Expect a pause each time; " +
+                "on low-memory or slow-disk hosts, turn this off.");
+
+        saveTask = new BukkitRunnable() {
             @Override
             public void run() {
-                performIncrementalSave();
+                performWorldSave();
             }
         }.runTaskTimer(plugin, 20L * saveInterval, 20L * saveInterval);
-
-        Logger.info("Incremental saving enabled (interval: " + saveInterval + "s)");
     }
 
-    private void startCacheCleanup() {
-        cleanupTask = new BukkitRunnable() {
+    private void scheduleRescan() {
+        rescanTask = new BukkitRunnable() {
             @Override
             public void run() {
-                cleanupRegionCache();
+                scanWorldRegions();
             }
-        }.runTaskTimer(plugin, 20L * cacheCleanupInterval, 20L * cacheCleanupInterval);
-
-        Logger.info("Region cache cleanup enabled (interval: " + cacheCleanupInterval + "s)");
+        }.runTaskTimerAsynchronously(plugin, 100L, RESCAN_INTERVAL_TICKS);
     }
 
-    private void performIncrementalSave() {
+    private void performWorldSave() {
         try {
             for (World world : Bukkit.getWorlds()) {
-                if (paperRegionSupported && saveIncrementallyMethod != null) {
-                    // Use Paper's incremental save
-                    saveIncrementallyMethod.invoke(world, true);
-                    Logger.debug("Incremental save completed for " + world.getName());
-                } else {
-                    // Fallback to standard save
-                    world.save();
-                }
+                world.save();
             }
-
         } catch (Exception e) {
-            Logger.warning("Error during incremental save: " + e.getMessage());
-        }
-    }
-
-    private void saveAllWorlds(boolean async) {
-        for (World world : Bukkit.getWorlds()) {
-            try {
-                if (async && saveIncrementallyMethod != null) {
-                    saveIncrementallyMethod.invoke(world, false);
-                } else {
-                    world.save();
-                }
-            } catch (Exception e) {
-                Logger.warning("Error saving world " + world.getName() + ": " + e.getMessage());
-            }
-        }
-    }
-
-    private void cleanupRegionCache() {
-        long now = System.currentTimeMillis();
-        List<String> toRemove = new ArrayList<>();
-
-        // Find stale cache entries
-        for (Map.Entry<String, Long> entry : lastAccessTimes.entrySet()) {
-            if (now - entry.getValue() > regionCacheTimeout) {
-                toRemove.add(entry.getKey());
-            }
-        }
-
-        // Remove stale entries
-        for (String key : toRemove) {
-            lastAccessTimes.remove(key);
-            regionFiles.remove(key);
-        }
-
-        if (!toRemove.isEmpty()) {
-            Logger.debug("Cleaned up " + toRemove.size() + " stale region cache entries");
+            Logger.warning("Error during world save: " + e.getMessage());
         }
     }
 
     /**
-     * Scan all world region files
+     * Scans region files on disk. Safe to call from an async task - it touches
+     * only java.io and World#getWorldFolder(), which is an immutable path.
      */
     private void scanWorldRegions() {
-        totalRegions = 0;
-        totalRegionSize.set(0);
+        try {
+            Map<String, RegionFileInfo> scanned = new HashMap<>();
+            long size = 0;
+            int count = 0;
 
-        for (World world : Bukkit.getWorlds()) {
-            File regionDir = getRegionDirectory(world);
-            if (regionDir != null && regionDir.exists()) {
-                scanRegionDirectory(world.getName(), regionDir);
+            for (World world : new ArrayList<>(Bukkit.getWorlds())) {
+                File regionDir = getRegionDirectory(world);
+                if (regionDir == null || !regionDir.exists()) continue;
+
+                File[] files = regionDir.listFiles((dir, name) ->
+                        name.endsWith(".mca") || name.endsWith(".mcr"));
+
+                if (files == null) continue;
+
+                for (File file : files) {
+                    RegionFileInfo info = new RegionFileInfo();
+                    info.worldName = world.getName();
+                    info.fileName = file.getName();
+                    info.size = file.length();
+                    info.lastModified = file.lastModified();
+
+                    scanned.put(world.getName() + "/" + file.getName(), info);
+                    size += info.size;
+                    count++;
+                }
             }
-        }
 
-        Logger.info("Scanned " + totalRegions + " region files (" +
-                formatBytes(totalRegionSize.get()) + ")");
-    }
+            regionFiles.clear();
+            regionFiles.putAll(scanned);
+            totalRegionSize.set(size);
+            totalRegions.set(count);
 
-    private void scanRegionDirectory(String worldName, File regionDir) {
-        File[] files = regionDir.listFiles((dir, name) ->
-                name.endsWith(".mca") || name.endsWith(".mcr"));
+            Logger.debug("Scanned " + count + " region files (" + formatBytes(size) + ")");
 
-        if (files == null) return;
-
-        for (File file : files) {
-            try {
-                RegionFileInfo info = new RegionFileInfo();
-                info.worldName = worldName;
-                info.fileName = file.getName();
-                info.path = file.getAbsolutePath();
-                info.size = file.length();
-                info.lastModified = file.lastModified();
-
-                String key = worldName + "/" + file.getName();
-                regionFiles.put(key, info);
-                totalRegionSize.addAndGet(file.length());
-                totalRegions++;
-
-            } catch (Exception e) {
-                Logger.warning("Error scanning region file " + file.getName() + ": " + e.getMessage());
-            }
+        } catch (Exception e) {
+            Logger.warning("Error scanning region files: " + e.getMessage());
         }
     }
 
     /**
-     * Find and remove empty region files
+     * Finds and removes region files that contain no chunks.
+     *
+     * <p>This deletes world data. It is gated behind
+     * paper.region-files.remove-empty-regions, which is off by default.
      */
     public int removeEmptyRegions(World world) {
         File regionDir = getRegionDirectory(world);
@@ -283,13 +222,26 @@ public class RegionFileOptimizer {
         return removed;
     }
 
+    /**
+     * Reads a region file's chunk location table to decide whether it holds any
+     * chunks.
+     *
+     * <p>The old version called {@code raf.read(header)} and ignored the return
+     * value. A short read leaves the rest of the buffer zeroed, every offset
+     * then reads as 0, the region is declared empty, and the file is deleted -
+     * permanent world data loss. readFully() plus a length guard closes that.
+     */
     private boolean isRegionEmpty(File file) throws IOException {
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            // Read first 4KB (locations)
-            byte[] header = new byte[4096];
-            raf.read(header);
+        // A region file with any chunk in it is at least a 4KB location table
+        // plus a 4KB timestamp table.
+        if (file.length() < 8192) {
+            return true;
+        }
 
-            // Check if any chunks exist
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            byte[] header = new byte[4096];
+            raf.readFully(header);
+
             for (int i = 0; i < 1024; i++) {
                 int offset = (header[i * 4] & 0xFF) << 16 |
                         (header[i * 4 + 1] & 0xFF) << 8 |
@@ -300,42 +252,31 @@ public class RegionFileOptimizer {
                 }
             }
 
-            return true; // No chunks found
+            return true;
         }
     }
 
-    /**
-     * Get region directory for a world
-     */
     private File getRegionDirectory(World world) {
         File worldFolder = world.getWorldFolder();
 
-        // Check different possible paths
         File regionDir = new File(worldFolder, "region");
         if (regionDir.exists()) return regionDir;
 
-        // For Nether/End
-        String envName = world.getEnvironment().name().toLowerCase();
         regionDir = new File(worldFolder, "DIM-1/region"); // Nether
-        if (regionDir.exists() && envName.contains("nether")) return regionDir;
+        if (regionDir.exists()) return regionDir;
 
         regionDir = new File(worldFolder, "DIM1/region"); // End
-        if (regionDir.exists() && envName.contains("end")) return regionDir;
+        if (regionDir.exists()) return regionDir;
 
         return null;
     }
 
-    /**
-     * Get statistics about region files
-     */
     public RegionStats getStatistics() {
         RegionStats stats = new RegionStats();
-        stats.totalRegions = totalRegions;
+        stats.totalRegions = totalRegions.get();
         stats.totalSize = totalRegionSize.get();
-        stats.paperSupported = paperRegionSupported;
         stats.incrementalSaving = incrementalSaving;
 
-        // Calculate per-world stats
         for (RegionFileInfo info : regionFiles.values()) {
             stats.sizeByWorld.merge(info.worldName, info.size, Long::sum);
             stats.countByWorld.merge(info.worldName, 1, Integer::sum);
@@ -345,16 +286,12 @@ public class RegionFileOptimizer {
     }
 
     /**
-     * Force flush region cache (Paper only)
+     * Full synchronous save of every world. Only called before empty-region
+     * deletion, so that what is on disk reflects the live world.
      */
     public void flushRegionCache() {
-        if (!paperRegionSupported) {
-            Logger.debug("Region cache flushing not supported");
-            return;
-        }
-
-        Logger.info("Flushing region cache...");
-        saveAllWorlds(false);
+        Logger.info("Saving all worlds before region cleanup (this will pause the server briefly)...");
+        performWorldSave();
     }
 
     private String formatBytes(long bytes) {
@@ -364,24 +301,9 @@ public class RegionFileOptimizer {
         return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
-    // Configuration methods
-    public void setIncrementalSaving(boolean enabled) {
-        this.incrementalSaving = enabled;
-    }
-
-    public void setSaveInterval(int seconds) {
-        this.saveInterval = seconds;
-    }
-
-    public void setCacheCleanupInterval(int seconds) {
-        this.cacheCleanupInterval = seconds;
-    }
-
-    // Inner classes
     private static class RegionFileInfo {
         String worldName;
         String fileName;
-        String path;
         long size;
         long lastModified;
     }
@@ -389,7 +311,6 @@ public class RegionFileOptimizer {
     public static class RegionStats {
         public int totalRegions;
         public long totalSize;
-        public boolean paperSupported;
         public boolean incrementalSaving;
         public Map<String, Long> sizeByWorld = new HashMap<>();
         public Map<String, Integer> countByWorld = new HashMap<>();

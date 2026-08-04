@@ -61,7 +61,7 @@ public class CommandManager implements CommandExecutor {
                     return handlePreload(sender, args);
 
                 case "gc":
-                    return handleGC(sender);
+                    return handleGC(sender, args);
 
                 case "auto":
                     return handleAuto(sender);
@@ -129,6 +129,10 @@ public class CommandManager implements CommandExecutor {
         }
 
         Msg.success(sender, "Removed §f" + removed + " §aentities.");
+        if (type == EntityManager.EntityClearType.ALL) {
+            Msg.send(sender, "§7Cleared dropped items, XP, projectiles and hostile mobs. " +
+                    "Vehicles, tamed animals and passive mobs were left alone.");
+        }
         return true;
     }
 
@@ -254,14 +258,25 @@ public class CommandManager implements CommandExecutor {
         return true;
     }
 
-    private boolean handleGC(CommandSender sender) {
+    private boolean handleGC(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.gc")) {
             Msg.noPermission(sender);
             return true;
         }
 
-        Msg.info(sender, "Running garbage collection...");
-        plugin.getPerformanceMonitor().performGarbageCollection();
+        boolean force = args.length > 1 && args[1].equalsIgnoreCase("force");
+
+        long wait = plugin.getPerformanceMonitor().getMillisUntilGarbageCollectionAllowed();
+        if (!force && wait > 0) {
+            Msg.error(sender, "Garbage collection ran recently. A forced full GC pauses the whole " +
+                    "server, so it's rate limited.");
+            Msg.send(sender, "§7Available again in " + (wait / 1000) + "s, or use §f/uo gc force§7.");
+            return true;
+        }
+
+        Msg.info(sender, "Running garbage collection (the server will pause briefly)...");
+        long freed = plugin.getPerformanceMonitor().requestGarbageCollection(true);
+        Msg.success(sender, "Reclaimed §f" + Math.max(0, freed) + "MB§a.");
         return true;
     }
 
@@ -283,12 +298,15 @@ public class CommandManager implements CommandExecutor {
             return true;
         }
 
-        Msg.info(sender, "Merging items and XP orbs...");
-        int merged = 0;
+        // This runs the full optimization pass, which merges items and XP but
+        // also removes stuck arrows and any excess items/mobs over the
+        // per-chunk caps. Reporting it as "merged" was misleading.
+        Msg.info(sender, "Running entity merge and cleanup...");
+        int affected = 0;
         for (World world : Bukkit.getWorlds()) {
-            merged += plugin.getEntityManager().optimizeWorld(world);
+            affected += plugin.getEntityManager().optimizeWorld(world);
         }
-        Msg.success(sender, "Merged §f" + merged + " §aentities.");
+        Msg.success(sender, "Merged or removed §f" + affected + " §aentities.");
         return true;
     }
 
@@ -376,12 +394,11 @@ public class CommandManager implements CommandExecutor {
         String entityNote = report.totalEntities > 5000 ? " §e(HIGH)" : "";
         Msg.kv(sender, 2, "Total Entities", report.totalEntities + entityNote);
         Msg.kv(sender, 2, "Loaded Chunks", String.valueOf(report.totalChunks));
-        Msg.kv(sender, 2, "Preloaded Chunks", String.valueOf(preloadStats.preloadedChunksCount));
+        Msg.kv(sender, 2, "Preloaded Chunks", String.valueOf(preloadStats.chunksPreloaded));
         Msg.kv(sender, 2, "Entities/Chunk", String.format("%.2f", report.entitiesPerChunk));
 
         Msg.section(sender, "Chunk Preloading");
         Msg.kv(sender, 2, "Status", Msg.bool(plugin.getConfigManager().isChunkPreloadingEnabled()));
-        Msg.kv(sender, 2, "Queue Size", String.valueOf(preloadStats.queueSize));
         Msg.kv(sender, 2, "Session Preloaded", String.valueOf(preloadStats.chunksPreloaded));
 
         Msg.section(sender, "Recommendations");
@@ -393,8 +410,10 @@ public class CommandManager implements CommandExecutor {
         }
         if (report.memoryInfo.usagePercent > 80) {
             Msg.send(sender, "  §c⚠ High memory usage. Consider:");
-            Msg.send(sender, "    §7- Running /uo gc");
-            Msg.send(sender, "    §7- Reducing preload radius");
+            Msg.send(sender, "    §7- Lowering view distance and simulation distance");
+            Msg.send(sender, "    §7- Reducing entity limits");
+            Msg.send(sender, "    §7- Disabling chunk preloading and spawn chunk tickets");
+            Msg.send(sender, "    §7(a forced GC via /uo gc pauses the server and rarely helps)");
         }
         if (report.currentTPS >= 19 && report.memoryInfo.usagePercent < 70) {
             Msg.send(sender, "  §a✓ Server is running optimally!");
@@ -515,7 +534,6 @@ public class CommandManager implements CommandExecutor {
             Msg.kv(sender, 2, "Total Hang Time", formatTime(stats.watchdogStats.totalHangTime));
             Msg.kv(sender, 2, "Average Hang", stats.watchdogStats.averageHangDuration + "ms");
             Msg.kv(sender, 2, "Emergency Mode", stats.watchdogStats.emergencyMode ? "§cACTIVE" : "§aInactive");
-            Msg.kv(sender, 2, "Paper Watchdog", Msg.bool(stats.watchdogStats.paperWatchdogSupported, "Yes", "No"));
 
             if (!stats.watchdogStats.hangCauses.isEmpty()) {
                 Msg.send(sender, "  §eHang Causes:");
@@ -531,7 +549,7 @@ public class CommandManager implements CommandExecutor {
             Msg.section(sender, "Region Files");
             Msg.kv(sender, 2, "Total Regions", String.valueOf(stats.regionStats.totalRegions));
             Msg.kv(sender, 2, "Total Size", formatBytes(stats.regionStats.totalSize));
-            Msg.kv(sender, 2, "Incremental Save", Msg.bool(stats.regionStats.incrementalSaving));
+            Msg.kv(sender, 2, "Periodic World Save", Msg.bool(stats.regionStats.incrementalSaving));
 
             if (!stats.regionStats.sizeByWorld.isEmpty()) {
                 Msg.send(sender, "  §eSize by World:");
