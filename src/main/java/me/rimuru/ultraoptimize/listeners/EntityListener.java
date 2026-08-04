@@ -4,6 +4,8 @@ import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.config.ConfigManager;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Chunk;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
@@ -36,10 +38,20 @@ public class EntityListener implements Listener {
                 return;
             }
 
-            // entity.getChunk() rather than event.getLocation().getChunk():
-            // Location#getChunk() goes through World#getChunkAt, which loads the
-            // chunk if it is not already loaded.
-            if (!plugin.getEntityManager().canEntitySpawn(entity.getChunk())) {
+            // Deliberately not Location#getChunk(): that goes through
+            // World#getChunkAt, which loads the chunk if it is not already
+            // loaded. Derive the coordinates and check first. (The chunk is
+            // always loaded during a spawn event, but the guard costs nothing
+            // and keeps this honest.)
+            Location loc = event.getLocation();
+            World world = loc.getWorld();
+            if (world == null) return;
+
+            int chunkX = loc.getBlockX() >> 4;
+            int chunkZ = loc.getBlockZ() >> 4;
+            if (!world.isChunkLoaded(chunkX, chunkZ)) return;
+
+            if (!plugin.getEntityManager().canEntitySpawn(world.getChunkAt(chunkX, chunkZ))) {
                 event.setCancelled(true);
             }
 
@@ -58,11 +70,16 @@ public class EntityListener implements Listener {
             // getNearbyEntities() scan) per item.
             if (config.isAutoMergeItems()) {
                 Item item = event.getEntity();
-                Chunk chunk = item.getChunk();
+                Location loc = item.getLocation();
+                World world = loc.getWorld();
+                if (world == null) return;
 
-                if (plugin.getEntityManager().claimChunkMergeSlot(chunk)) {
+                int chunkX = loc.getBlockX() >> 4;
+                int chunkZ = loc.getBlockZ() >> 4;
+
+                if (plugin.getEntityManager().claimChunkMergeSlot(world, chunkX, chunkZ)) {
                     plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                        plugin.getEntityManager().releaseChunkMergeSlot(chunk);
+                        plugin.getEntityManager().releaseChunkMergeSlot(world, chunkX, chunkZ);
                         if (!item.isDead()) {
                             plugin.getEntityManager().mergeNearbyItems(item);
                         }

@@ -6,6 +6,7 @@ import me.rimuru.ultraoptimize.utils.Keys;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Arrow;
@@ -77,17 +78,21 @@ public class EntityManager {
         if (world == null) return 0;
 
         int removed = 0;
-        // Grouped by packed chunk key rather than by Chunk object: entity
-        // .getChunk() is a direct lookup, while the old
-        // entity.getLocation().getChunk() allocated a fresh Location for every
-        // entity in the world on every optimization pass.
+        // Grouped by packed chunk key rather than by Chunk object. The old code
+        // called entity.getLocation().getChunk() per entity, which allocated a
+        // fresh Location AND did a chunk lookup for every entity in the world on
+        // every optimization pass. Entity#getChunk() would be the direct
+        // replacement but is not present in every API version, so this fills one
+        // reused Location and derives the chunk coordinates arithmetically.
         Map<Long, List<Entity>> chunkEntities = new HashMap<>();
+        Location cursor = new Location(null, 0, 0, 0);
 
         try {
             for (Entity entity : world.getEntities()) {
                 if (isEntityExempt(entity)) continue;
 
-                long key = Keys.chunk(entity.getChunk());
+                entity.getLocation(cursor);
+                long key = Keys.chunk(cursor.getBlockX() >> 4, cursor.getBlockZ() >> 4);
                 chunkEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
             }
 
@@ -222,18 +227,18 @@ public class EntityManager {
      * Attempts to reserve a merge sweep for the given chunk. Returns true if
      * this call claimed the slot, false if one is already scheduled.
      */
-    public boolean claimChunkMergeSlot(Chunk chunk) {
-        if (chunk == null) return false;
+    public boolean claimChunkMergeSlot(World world, int chunkX, int chunkZ) {
+        if (world == null) return false;
         return pendingChunkMerges
-                .computeIfAbsent(chunk.getWorld().getUID(), k -> ConcurrentHashMap.newKeySet())
-                .add(Keys.chunk(chunk));
+                .computeIfAbsent(world.getUID(), k -> ConcurrentHashMap.newKeySet())
+                .add(Keys.chunk(chunkX, chunkZ));
     }
 
-    public void releaseChunkMergeSlot(Chunk chunk) {
-        if (chunk == null) return;
-        Set<Long> chunks = pendingChunkMerges.get(chunk.getWorld().getUID());
+    public void releaseChunkMergeSlot(World world, int chunkX, int chunkZ) {
+        if (world == null) return;
+        Set<Long> chunks = pendingChunkMerges.get(world.getUID());
         if (chunks != null) {
-            chunks.remove(Keys.chunk(chunk));
+            chunks.remove(Keys.chunk(chunkX, chunkZ));
         }
     }
 
