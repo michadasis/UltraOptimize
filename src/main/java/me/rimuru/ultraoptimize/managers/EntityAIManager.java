@@ -143,7 +143,14 @@ public class EntityAIManager {
                         frozenMobs.remove(id);
                     }
                 } else {
-                    if (!ours) {
+                    // Re-check isAware() even for mobs we already believe are
+                    // frozen: setAware() is a transient flag, not persisted to
+                    // NBT, so a chunk unload/reload cycle silently resets it
+                    // to true on the reloaded entity while our bookkeeping
+                    // still says "ours". Without this check that mob stays
+                    // awake - defeating the optimization - until it wanders
+                    // back within range on its own.
+                    if (!ours || mob.isAware()) {
                         mob.setAware(false);
                         frozenMobs.add(id);
                     }
