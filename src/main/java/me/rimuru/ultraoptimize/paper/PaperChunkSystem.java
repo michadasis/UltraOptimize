@@ -3,15 +3,11 @@ package me.rimuru.ultraoptimize.paper;
 import me.rimuru.ultraoptimize.UltraOptimize;
 import me.rimuru.ultraoptimize.utils.Logger;
 import org.bukkit.Bukkit;
-import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -20,46 +16,20 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class PaperChunkSystem {
 
-    // chunkLoadTimes only ever grows via loadChunkUrgently()/loadChunkAsync() -
-    // there's no natural per-entry removal point (unlike activeTickets, which
-    // is removed via removeChunkTicket()), so on a long-lived server every
-    // distinct chunk ever async/urgently loaded would otherwise sit in this
-    // map forever. Sweep out anything older than this on a timer instead.
-    private static final long STALE_ENTRY_MILLIS = 600_000L; // 10 minutes
-    private static final long CLEANUP_INTERVAL_TICKS = 20L * 300; // 5 minutes
-
     private final UltraOptimize plugin;
     private final Map<String, ChunkTicket> activeTickets;
-    private final Map<String, Long> chunkLoadTimes;
-    private final Set<String> priorityChunks;
 
     // Reflection cache for Paper methods
     private Method isChunkGeneratedMethod;
-    private Method getChunkAtAsyncUrgentlyMethod;
     private Method addPluginChunkTicketMethod;
     private Method removePluginChunkTicketMethod;
     private boolean paperAPIsSupported;
 
-    private BukkitTask cleanupTask;
-
     public PaperChunkSystem(UltraOptimize plugin) {
         this.plugin = plugin;
         this.activeTickets = new ConcurrentHashMap<>();
-        this.chunkLoadTimes = new ConcurrentHashMap<>();
-        this.priorityChunks = ConcurrentHashMap.newKeySet();
 
         initializePaperAPIs();
-        startCleanupTask();
-    }
-
-    private void startCleanupTask() {
-        cleanupTask = new BukkitRunnable() {
-            @Override
-            public void run() {
-                long now = System.currentTimeMillis();
-                chunkLoadTimes.entrySet().removeIf(entry -> now - entry.getValue() > STALE_ENTRY_MILLIS);
-            }
-        }.runTaskTimerAsynchronously(plugin, CLEANUP_INTERVAL_TICKS, CLEANUP_INTERVAL_TICKS);
     }
 
     private void initializePaperAPIs() {
@@ -75,14 +45,6 @@ public class PaperChunkSystem {
                 Logger.info("isChunkGenerated not available (requires Paper)");
             }
 
-            // getChunkAtAsyncUrgently (Paper 1.14+)
-            try {
-                getChunkAtAsyncUrgentlyMethod = worldClass.getMethod("getChunkAtAsyncUrgently", int.class, int.class);
-                Logger.info("Paper urgent chunk loading API detected");
-            } catch (NoSuchMethodException e) {
-                Logger.info("Urgent chunk loading not available");
-            }
-
             // Plugin chunk tickets (Paper 1.13.2+)
             try {
                 addPluginChunkTicketMethod = worldClass.getMethod("addPluginChunkTicket",
@@ -95,7 +57,6 @@ public class PaperChunkSystem {
             }
 
             paperAPIsSupported = (isChunkGeneratedMethod != null ||
-                    getChunkAtAsyncUrgentlyMethod != null ||
                     addPluginChunkTicketMethod != null);
 
             if (paperAPIsSupported) {
@@ -124,84 +85,6 @@ public class PaperChunkSystem {
 
         // Fallback: assume generated if loaded
         return world.isChunkLoaded(chunkX, chunkZ);
-    }
-
-    /**
-     * Load chunk with high priority (urgent loading)
-     */
-    @SuppressWarnings("unchecked")
-    public CompletableFuture<Chunk> loadChunkUrgently(World world, int chunkX, int chunkZ) {
-        String key = getChunkKey(world, chunkX, chunkZ);
-        priorityChunks.add(key);
-
-        if (getChunkAtAsyncUrgentlyMethod != null) {
-            try {
-                CompletableFuture<Chunk> future = (CompletableFuture<Chunk>)
-                        getChunkAtAsyncUrgentlyMethod.invoke(world, chunkX, chunkZ);
-
-                // Paper completes this future on an unspecified (often
-                // non-main) thread. Hop back to the main thread before
-                // touching the map/set below or handing the chunk to
-                // whatever the caller chains next, since Bukkit API use
-                // requires the main thread. (No current caller relies on
-                // this, but the future returned here must be safe by
-                // construction for whoever eventually does.)
-                CompletableFuture<Chunk> result = new CompletableFuture<>();
-                future.whenComplete((chunk, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                    priorityChunks.remove(key);
-                    if (error != null) {
-                        result.completeExceptionally(error);
-                        return;
-                    }
-                    chunkLoadTimes.put(key, System.currentTimeMillis());
-                    Logger.debug("Urgently loaded chunk: " + key);
-                    result.complete(chunk);
-                }));
-                return result;
-
-            } catch (Exception e) {
-                Logger.warning("Error with urgent chunk loading: " + e.getMessage());
-                // The reflective invoke failed before any future existed to
-                // remove this key on completion - without this, every chunk
-                // that hits this path leaks its key in priorityChunks forever.
-                priorityChunks.remove(key);
-            }
-        }
-
-        // Fallback to standard async loading
-        return loadChunkAsync(world, chunkX, chunkZ);
-    }
-
-    /**
-     * Standard async chunk loading
-     */
-    @SuppressWarnings("unchecked")
-    public CompletableFuture<Chunk> loadChunkAsync(World world, int chunkX, int chunkZ) {
-        try {
-            Method getChunkAtAsync = World.class.getMethod("getChunkAtAsync", int.class, int.class);
-            CompletableFuture<Chunk> future = (CompletableFuture<Chunk>)
-                    getChunkAtAsync.invoke(world, chunkX, chunkZ);
-
-            String key = getChunkKey(world, chunkX, chunkZ);
-            // See loadChunkUrgently: hop to the main thread before completing,
-            // since Paper completes these futures on an unspecified thread.
-            CompletableFuture<Chunk> result = new CompletableFuture<>();
-            future.whenComplete((chunk, error) -> Bukkit.getScheduler().runTask(plugin, () -> {
-                if (error != null) {
-                    result.completeExceptionally(error);
-                    return;
-                }
-                chunkLoadTimes.put(key, System.currentTimeMillis());
-                result.complete(chunk);
-            }));
-            return result;
-
-        } catch (Exception e) {
-            Logger.warning("Async chunk loading failed: " + e.getMessage());
-
-            // Sync fallback
-            return CompletableFuture.completedFuture(world.getChunkAt(chunkX, chunkZ));
-        }
     }
 
     /**
@@ -351,8 +234,6 @@ public class PaperChunkSystem {
     public ChunkSystemStats getStatistics() {
         ChunkSystemStats stats = new ChunkSystemStats();
         stats.activeTickets = activeTickets.size();
-        stats.trackedChunks = chunkLoadTimes.size();
-        stats.priorityChunks = priorityChunks.size();
         stats.paperSupported = paperAPIsSupported;
 
         // Count tickets by type
@@ -361,34 +242,6 @@ public class PaperChunkSystem {
         }
 
         return stats;
-    }
-
-    /**
-     * Batch load chunks async
-     */
-    public CompletableFuture<List<Chunk>> loadChunksBatch(World world, List<ChunkCoord> coords, boolean urgent) {
-        List<CompletableFuture<Chunk>> futures = new ArrayList<>();
-
-        for (ChunkCoord coord : coords) {
-            if (urgent) {
-                futures.add(loadChunkUrgently(world, coord.x, coord.z));
-            } else {
-                futures.add(loadChunkAsync(world, coord.x, coord.z));
-            }
-        }
-
-        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                .thenApply(v -> {
-                    List<Chunk> chunks = new ArrayList<>();
-                    for (CompletableFuture<Chunk> future : futures) {
-                        try {
-                            chunks.add(future.get());
-                        } catch (Exception e) {
-                            Logger.warning("Failed to get chunk from future: " + e.getMessage());
-                        }
-                    }
-                    return chunks;
-                });
     }
 
     public boolean isPaperSupported() {
@@ -400,13 +253,7 @@ public class PaperChunkSystem {
     }
 
     public void shutdown() {
-        if (cleanupTask != null) {
-            cleanupTask.cancel();
-            cleanupTask = null;
-        }
         clearAllTickets();
-        chunkLoadTimes.clear();
-        priorityChunks.clear();
     }
 
     // Inner classes
@@ -435,20 +282,8 @@ public class PaperChunkSystem {
         TEMPORARY       // Temporary loading
     }
 
-    public static class ChunkCoord {
-        public final int x;
-        public final int z;
-
-        public ChunkCoord(int x, int z) {
-            this.x = x;
-            this.z = z;
-        }
-    }
-
     public static class ChunkSystemStats {
         public int activeTickets;
-        public int trackedChunks;
-        public int priorityChunks;
         public boolean paperSupported;
         public Map<TicketType, Integer> ticketsByType = new HashMap<>();
     }

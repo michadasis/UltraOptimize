@@ -271,6 +271,10 @@ public class PaperOptimizationManager {
             stats.chunkSystemStats = chunkSystem.getStatistics();
         }
 
+        if (chunkLoader != null) {
+            stats.chunkLoaderStats = chunkLoader.getStatistics();
+        }
+
         if (watchdogMonitor != null) {
             stats.watchdogStats = watchdogMonitor.getStatistics();
         }
@@ -317,6 +321,7 @@ public class PaperOptimizationManager {
         public boolean paperDetected;
         public String serverVersion;
         public PaperChunkSystem.ChunkSystemStats chunkSystemStats;
+        public PaperChunkLoader.LoaderStats chunkLoaderStats;
         public WatchdogMonitor.WatchdogStats watchdogStats;
         public RegionFileOptimizer.RegionStats regionStats;
     }

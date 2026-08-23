@@ -82,9 +82,7 @@ public class UltraOptimize extends JavaPlugin {
                     if (configManager.isPaperRegionFilesEnabled()) {
                         Logger.info("Region Optimization: ACTIVE");
                     }
-                    if (configManager.isPaperUseChunkTickets()) {
-                        Logger.info("Advanced Chunk System: ACTIVE");
-                    }
+                    Logger.info("Advanced Chunk System: ACTIVE");
                 } else {
                     Logger.info("Paper Optimizations: DISABLED (in config)");
                 }
