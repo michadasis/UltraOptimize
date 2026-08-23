@@ -80,7 +80,6 @@ public class ConfigManager {
     private String paperCpuProfile;
 
     // Paper chunk system
-    private boolean paperUseChunkTickets;
     private boolean paperTicketSpawnChunks;
     private int paperSpawnTicketRadius;
     private boolean paperUseUrgentLoading;
@@ -193,7 +192,6 @@ public class ConfigManager {
         config.addDefault("paper.cpu-profile", "LOW");
 
         // Paper chunk system
-        config.addDefault("paper.chunk-system.use-chunk-tickets", true);
         config.addDefault("paper.chunk-system.ticket-spawn-chunks", false);
         config.addDefault("paper.chunk-system.spawn-ticket-radius", 3);
         config.addDefault("paper.chunk-system.use-urgent-loading", true);
@@ -282,7 +280,6 @@ public class ConfigManager {
         paperCpuProfile = config.getString("paper.cpu-profile", "LOW");
 
         // Paper chunk system
-        paperUseChunkTickets = config.getBoolean("paper.chunk-system.use-chunk-tickets", true);
         paperTicketSpawnChunks = config.getBoolean("paper.chunk-system.ticket-spawn-chunks", false);
         paperSpawnTicketRadius = config.getInt("paper.chunk-system.spawn-ticket-radius", 3);
         paperUseUrgentLoading = config.getBoolean("paper.chunk-system.use-urgent-loading", true);
@@ -505,7 +502,6 @@ public class ConfigManager {
     public String getPaperCpuProfile() { return paperCpuProfile; }
 
     // Paper chunk system getters
-    public boolean isPaperUseChunkTickets() { return paperUseChunkTickets; }
     public boolean isPaperTicketSpawnChunks() { return paperTicketSpawnChunks; }
     public int getPaperSpawnTicketRadius() { return paperSpawnTicketRadius; }
     public boolean isPaperUseUrgentLoading() { return paperUseUrgentLoading; }

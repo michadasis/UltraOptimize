@@ -516,8 +516,6 @@ public class CommandManager implements CommandExecutor {
         if (stats.chunkSystemStats != null) {
             Msg.section(sender, "Chunk System");
             Msg.kv(sender, 2, "Active Tickets", String.valueOf(stats.chunkSystemStats.activeTickets));
-            Msg.kv(sender, 2, "Tracked Chunks", String.valueOf(stats.chunkSystemStats.trackedChunks));
-            Msg.kv(sender, 2, "Priority Chunks", String.valueOf(stats.chunkSystemStats.priorityChunks));
             Msg.kv(sender, 2, "Paper Support", Msg.bool(stats.chunkSystemStats.paperSupported, "Yes", "No"));
 
             if (!stats.chunkSystemStats.ticketsByType.isEmpty()) {
@@ -525,6 +523,14 @@ public class CommandManager implements CommandExecutor {
                 stats.chunkSystemStats.ticketsByType.forEach((type, count) ->
                         Msg.kv(sender, 4, type.toString(), String.valueOf(count)));
             }
+        }
+
+        // Chunk Loader Stats
+        if (stats.chunkLoaderStats != null) {
+            Msg.section(sender, "Chunk Loader");
+            Msg.kv(sender, 2, "Total Loads", String.valueOf(stats.chunkLoaderStats.totalLoads));
+            Msg.kv(sender, 2, "Newly Generated",
+                    stats.chunkLoaderStats.generatedChunks + (stats.chunkLoaderStats.estimatedValues ? " §7(sampled)" : ""));
         }
 
         // Watchdog Stats

@@ -21,7 +21,9 @@ entities:
   max-per-chunk: 50
   # Maximum items allowed per chunk
   max-items-per-chunk: 100
-  # Radius around players to clear entities (0 = disabled)
+  # RESERVED FOR A FUTURE RELEASE - not currently functional.
+  # Nothing in the plugin reads this key yet; entity clearing always operates
+  # per-chunk (see max-per-chunk / max-items-per-chunk), not by radius.
   clear-radius: 0
   # Remove drops from killed mobs during optimization
   remove-drops: false
@@ -47,11 +49,20 @@ entities:
 
 # Chunk Management Settings
 chunks:
-  # Unload chunks with minimal entities
+  # Whether a chunk counts as "empty" (< 3 entities, < 2 tile entities) and
+  # therefore eligible to unload. This is a permission, not a trigger: the
+  # unload path only actually runs via aggressive-unload below, the
+  # "/uo chunks unload" command, or watchdog emergency mode - all three are
+  # off by default, so leaving this "true" does nothing by itself on a
+  # stock install.
   unload-empty: true
-  # Force chunk format upgrades (use with caution)
+  # RESERVED FOR A FUTURE RELEASE - not currently functional. There is no
+  # generic Bukkit/Paper API to trigger a chunk format upgrade, so this key
+  # has no effect yet.
   force-upgrade: false
-  # Maximum number of loaded chunks (0 = unlimited)
+  # Logs a console warning when total loaded chunks across all worlds
+  # exceeds this during a chunk unload pass (0 = never warn). This does NOT
+  # enforce a cap - chunks are never refused or force-unloaded because of it.
   max-loaded: 0
   # Radius around players where chunks won't be unloaded
   unload-radius: 8
@@ -145,16 +156,14 @@ paper:
   # Enable Paper-specific optimizations
   enabled: true
 
-  # CPU Usage Profile (affects monitoring frequency and detail)
-  # LOW: Minimal monitoring, very low CPU usage (~0.1-0.5%)
-  # MEDIUM: Balanced monitoring, moderate CPU usage (~0.5-1.5%)
-  # HIGH: Detailed monitoring, higher CPU usage (~1.5-3%)
+  # RESERVED FOR A FUTURE RELEASE - not currently functional.
+  # Every monitoring interval in the plugin (chunk stats, performance
+  # sampling, watchdog) is a fixed, individually-tuned constant today; none
+  # of them read this key, so LOW/MEDIUM/HIGH all currently behave the same.
   cpu-profile: LOW
 
   # Advanced Chunk System
   chunk-system:
-    # Use chunk tickets to keep important chunks loaded
-    use-chunk-tickets: true
     # Keep spawn chunks loaded with tickets.
     # OFF by default: these tickets are permanent, so the chunks can never
     # unload while the plugin is enabled, and they tick. That is a fixed
@@ -162,7 +171,9 @@ paper:
     ticket-spawn-chunks: false
     # Spawn chunk ticket radius
     spawn-ticket-radius: 3
-    # Use urgent chunk loading for high-priority chunks
+    # RESERVED FOR A FUTURE RELEASE - not currently functional. Nothing in
+    # the plugin currently requests urgent/priority chunk loading, so this
+    # key has no effect yet.
     use-urgent-loading: true
 
   # Watchdog Monitor
@@ -205,7 +216,8 @@ notifications:
   notify-admins: true
   # Broadcast optimization results to all players
   broadcast-optimization: true
-  # Show statistics in notifications
+  # RESERVED FOR A FUTURE RELEASE - not currently functional. Nothing in
+  # the plugin reads this key yet; notification content is fixed.
   show-statistics: true
   # Notify when watchdog detects hangs (Paper only)
   notify-hangs: true
