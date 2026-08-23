@@ -27,6 +27,7 @@ permissions:
       ultraoptimize.gc: true
       ultraoptimize.auto: true
       ultraoptimize.merge: true
+      ultraoptimize.unstick: true
       ultraoptimize.view: true
       ultraoptimize.report: true
       ultraoptimize.info: true
@@ -73,6 +74,10 @@ permissions:
 
   ultraoptimize.merge:
     description: Allows merging items and XP
+    default: op
+
+  ultraoptimize.unstick:
+    description: Allows unpausing AI-frozen mobs server-wide
     default: op
 
   ultraoptimize.view:

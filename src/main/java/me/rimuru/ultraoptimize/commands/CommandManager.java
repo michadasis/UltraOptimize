@@ -69,6 +69,9 @@ public class CommandManager implements CommandExecutor {
                 case "merge":
                     return handleMerge(sender);
 
+                case "unstick":
+                    return handleUnstick(sender);
+
                 case "view":
                     return handleView(sender, args);
 
@@ -310,6 +313,21 @@ public class CommandManager implements CommandExecutor {
         return true;
     }
 
+    private boolean handleUnstick(CommandSender sender) {
+        if (!sender.hasPermission("ultraoptimize.unstick")) {
+            Msg.noPermission(sender);
+            return true;
+        }
+
+        int count = plugin.getEntityAIManager().unstickAll();
+        Msg.success(sender, "Unpaused §f" + count + " §amob(s) that had AI paused.");
+        if (count > 0) {
+            Msg.send(sender, "§7This affects every unaware mob server-wide - it cannot tell a mob stuck " +
+                    "by this plugin apart from one deliberately left NoAI by another plugin or map maker.");
+        }
+        return true;
+    }
+
     private boolean handleView(CommandSender sender, String[] args) {
         if (!sender.hasPermission("ultraoptimize.view")) {
             Msg.noPermission(sender);
@@ -457,6 +475,7 @@ public class CommandManager implements CommandExecutor {
         Msg.send(sender, "§e/uo gc §8- §7Run garbage collection");
         Msg.send(sender, "§e/uo auto §8- §7Toggle auto-optimization");
         Msg.send(sender, "§e/uo merge §8- §7Merge nearby items/xp");
+        Msg.send(sender, "§e/uo unstick §8- §7Unpause every currently AI-paused mob server-wide");
         if (plugin.getPerformanceMonitor().isViewDistanceSupported()) {
             Msg.send(sender, "§e/uo view <world> <dist> §8- §7Set view distance (Paper only)");
         }

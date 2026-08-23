@@ -39,7 +39,7 @@ When running on a Paper server, UltraOptimize enables the following additional s
 
 ### Performance Features
 
-* AI pathfinding optimization that pauses AI and pathfinding for mobs outside a configurable distance from every player. Only mobs the plugin itself paused are ever resumed, so mobs deliberately set to NoAI by map makers, spawn eggs, or other plugins are left alone.
+* AI pathfinding optimization that pauses AI and pathfinding for mobs outside a configurable distance from every player. Only mobs the plugin itself paused are ever resumed, so mobs deliberately set to NoAI by map makers, spawn eggs, or other plugins are left alone. Which mobs those are is recorded as a tag on the mob's own persisted data, not in the plugin's memory, so that bookkeeping survives a chunk unload, a plugin reload, or a server restart - all things that used to be able to desync it and leave a mob paused forever. If you have mobs stuck from an older version, `/uo unstick` clears them (see Commands).
 * Dynamic view distance adjustment, controlled by both the optimize view distance and auto view distance settings. This requires Paper or a Paper based fork such as Purpur; the underlying API to change view distance at runtime does not exist on plain Spigot at any Minecraft version.
 * Rate limited garbage collection when memory usage is critical, with a five minute minimum between runs.
 * Redstone update suppression for any block firing more than a hundred times per second, using a per location rolling window. **Off by default.** This does not make redstone cheaper: the block still ticks, and the suppressed update simply becomes a no-op. What it does is stop a runaway circuit from cascading, at the cost of silently stalling clocks and jamming piston doors once a build crosses the threshold.
@@ -167,6 +167,7 @@ Any entity name in `exempt-types` that is not a valid `EntityType` on your Minec
 * `/uo auto`: toggles automatic optimization on or off.
 * `/uo gc`: forces garbage collection. Rate limited to once every five minutes, since a full collection pauses the entire server. Use `/uo gc force` to bypass the limit.
 * `/uo merge`: runs the merge and cleanup pass. As well as merging items and experience orbs, this removes stuck arrows and any items or mobs over the configured per chunk limits.
+* `/uo unstick`: sets every currently AI-paused mob on the server back to aware. This is a blunt recovery tool, not something run automatically: it cannot tell a mob `advanced.optimize-ai` paused apart from one deliberately left NoAI-adjacent by another plugin or a map maker, so it re-awakens both. Normal operation should never need it - see the note under AI pathfinding optimization below - but it exists for mobs left stuck by versions before that fix.
 
 ### Entity Commands
 
@@ -211,6 +212,7 @@ All clear commands respect `entities.exempt-types`.
 * `ultraoptimize.gc`: allows forcing garbage collection.
 * `ultraoptimize.auto`: allows toggling automatic optimization.
 * `ultraoptimize.merge`: allows merging entities.
+* `ultraoptimize.unstick`: allows unpausing AI-frozen mobs server-wide.
 * `ultraoptimize.view`: allows managing view distance.
 * `ultraoptimize.report`: allows generating reports.
 * `ultraoptimize.info`: allows viewing plugin information.
